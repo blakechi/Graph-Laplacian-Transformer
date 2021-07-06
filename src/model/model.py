@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 import torch
 from torch import nn, einsum
@@ -14,6 +14,7 @@ from src.utils.helpers import name_with_msg, config_pop_argument
 
 class GraphLaplacianAttention(nn.Module):
     heads: Final[int]
+    expanded_heads: Final[int]
     scale: Final[float]
     mask_value: Final[float]
 
@@ -21,9 +22,11 @@ class GraphLaplacianAttention(nn.Module):
         self,
         dim: int,
         heads: int,
+        head_expand_scale: float = 1.,
         attention_dropout: float = 0.,
         ff_dropout: float = 0.,
         use_bias: bool = False,
+        use_conv_bias: bool = False,
     ) -> None:
 
         head_dim = dim // heads
@@ -33,10 +36,20 @@ class GraphLaplacianAttention(nn.Module):
         ), name_with_msg(self, f"`head_dim` ({head_dim}) * `heads` ({heads}) != `dim` ({dim})")
 
         self.heads = heads
+        self.expanded_heads = int(head_expand_scale*self.heads)  # ceiling
 
-        self.QKV = nn.Linear(dim, 3*dim, bias=use_bias)
-        self.edge_KV = nn.Linear(dim, 2*dim, bias=use_bias)
-        self.out_linear = nn.Linear(dim, dim)
+        self.QK = nn.Linear(dim, 2*dim, bias=use_bias)
+        self.V = nn.Linear(dim, self.expanded_heads*head_dim)
+        self.edge_K = nn.Linear(dim, dim, bias=use_bias)
+        self.edge_V = nn.Linear(dim, self.expanded_heads*head_dim, bias=use_bias)
+        self.depth_wise_conv = nn.Conv2d(
+            self.heads,
+            self.expanded_heads,
+            kernel_size=1,
+            groups=self.heads,
+            bias=use_conv_bias
+        )
+        self.out_linear = nn.Linear(self.expanded_heads*head_dim, dim)
 
         self.attention_dropout = nn.Dropout(attention_dropout)
         self.out_dropout = nn.Dropout(ff_dropout)
@@ -44,26 +57,35 @@ class GraphLaplacianAttention(nn.Module):
         self.scale = head_dim ** (-0.5)
         self.mask_value = -torch.finfo(torch.float32).max()
 
-    def forward(self, x: torch.Tensor, edges: torch.Tensor, attentino_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, edges: torch.Tensor, attentino_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         _, n, _ = x.shape
 
-        q, k, v = self.QKV(x).chunk(chunks=3, dim=-1)
-        q = rearrange(q, "b n (h d) -> b h n d")
-        k = rearrange(k, "b n (h d) -> b h n d")*self.scale
-        v = rearrange(v, "b n (h d) -> b h n d")
+        #
+        q, k = self.QK(x).chunk(chunks=2, dim=-1)
+        v = self.V(x)
+        q = rearrange(q, "b n (h d) -> b h n d", h=self.heads)
+        k = rearrange(k, "b n (h d) -> b h n d", h=self.heads)*self.scale
+        v = rearrange(v, "b n (h d) -> b h n d", h=self.expanded_heads)
 
-        edge_k, edge_v = self.QKV(edges).chunk(chunks=2, dim=-1)
-        edge_k = rearrange(edge_k, "b n (h d) -> b h n d")*self.scale
-        edge_v = rearrange(edge_v, "b n (h d) -> b h n d")
+        edge_k = self.edge_K(edges)
+        edge_v = self.edge_V(edges)
+        edge_k = rearrange(edge_k, "b n (h d) -> b h n d", h=self.heads)*self.scale
+        edge_v = rearrange(edge_v, "b n (h d) -> b h n d", h=self.expanded_heads)
 
+        #
         attention = einsum("b h n d, b h m d -> b h n m", q, k + edge_k)
-        attention = attention.masked_fill_(attentino_mask, self.mask_value)
+        attention = self.depth_wise_conv(attention)
+        
+        if attentino_mask is not None:
+            attention = attention.masked_fill_(attentino_mask, self.mask_value)
+
         attention = attention.softmax(dim=-1)
         
         attention_degree = repeat(torch.eye(n), "n m -> 1 h n m", h=self.heads)
         attention = attention_degree - attention  # D - A
         attention = self.attention_dropout(attention)
 
+        #
         v = v + edge_v
         out = einsum("b h n m, b h m d -> b h n d", attention, v)
         out = rearrange("b h n d -> b n (h d)")
