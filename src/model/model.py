@@ -10,6 +10,7 @@ from einops import rearrange, repeat
 
 from src.utils import LayerScale, MLP, ClassAttentionLayer, TokenDropout, ProjectionHead
 from src.utils.helpers import name_with_msg, config_pop_argument
+from .config import GraphLaplacianTransformerConfig
 
 
 class GraphLaplacianAttention(nn.Module):
@@ -26,6 +27,7 @@ class GraphLaplacianAttention(nn.Module):
         attention_dropout: float = 0.,
         ff_dropout: float = 0.,
         use_bias: bool = False,
+        use_edge_bias: bool = False,
         use_conv_bias: bool = False,
     ) -> None:
 
@@ -39,9 +41,9 @@ class GraphLaplacianAttention(nn.Module):
         self.expanded_heads = int(head_expand_scale*self.heads)  # ceiling
 
         self.QK = nn.Linear(dim, 2*dim, bias=use_bias)
-        self.V = nn.Linear(dim, self.expanded_heads*head_dim)
-        self.edge_K = nn.Linear(dim, dim, bias=use_bias)
-        self.edge_V = nn.Linear(dim, self.expanded_heads*head_dim, bias=use_bias)
+        self.V = nn.Linear(dim, self.expanded_heads*head_dim, bias=use_bias)
+        self.edge_K = nn.Linear(dim, dim, bias=use_edge_bias)
+        self.edge_V = nn.Linear(dim, self.expanded_heads*head_dim, bias=use_edge_bias)
         self.depth_wise_conv = nn.Conv2d(
             self.heads,
             self.expanded_heads,
@@ -125,7 +127,7 @@ class GraphLaplacianTransformerLayer(nn.Module):
             path_dropout=path_dropout,
         )
 
-    def forward(self, x: torch.Tensor, edges: torch.Tensor, attentino_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, edges: torch.Tensor, attentino_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = self.attn_block(x, edges, attentino_mask)
         x = self.ff_block(x)
 
@@ -143,6 +145,9 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         heads: int,
         alpha: float,
         use_bias: bool = False,
+        use_edge_bias: bool = False,
+        use_conv_bias: bool = False,
+        head_expand_scale: float = 1.,
         ff_expand_scale: int = 4,
         ff_dropout: float = 0.,
         attention_dropout: float = 0.,
@@ -159,6 +164,9 @@ class GraphLaplacianTransformerBackbone(nn.Module):
                 heads=heads,
                 alpha=alpha,
                 use_bias=use_bias,
+                use_edge_bias=use_edge_bias,
+                use_conv_bias=use_conv_bias,
+                head_expand_scale=head_expand_scale,
                 ff_expand_scale=ff_expand_scale,
                 ff_dropout=ff_dropout,
                 attention_dropout=attention_dropout,
@@ -195,12 +203,6 @@ class GraphLaplacianTransformerBackbone(nn.Module):
 
         return cls_token
 
-    def parse_tokens(self, x: torch.Tensor) -> torch.Tensor:
-        return self.token_embedding(x)
-
-    def parse_edges(self, x: torch.Tensor) -> torch.Tensor:
-        return self.edge_embedding(x)
-
     @torch.jit.ignore
     def _init_weights(self, m):
         if isinstance(m, nn.Parameter):
@@ -220,7 +222,7 @@ class GraphLaplacianTransformerBackbone(nn.Module):
     
 
 class GraphLaplacianTransformerWithLinearClassifier(GraphLaplacianTransformerBackbone):
-    def __init__(self, config = None) -> None:
+    def __init__(self, config: GraphLaplacianTransformerConfig = None) -> None:
         num_classes = config_pop_argument(config, "num_classes")
         pred_act_fnc_name = config_pop_argument(config, "pred_act_fnc_name")
         super().__init__(**config.__dict__)
