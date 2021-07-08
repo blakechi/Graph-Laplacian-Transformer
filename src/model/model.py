@@ -9,7 +9,7 @@ except:
     from torch.jit import Final
 from einops import rearrange, repeat
 
-from src.utils import LayerScale, MLP, ClassAttentionLayer, TokenDropout, ProjectionHead
+from src.utils import LayerScale, MLP, TokenDropout, ProjectionHead
 from src.utils.helpers import name_with_msg, config_pop_argument
 from .config import GraphLaplacianTransformerConfig
 
@@ -146,7 +146,8 @@ class GraphLaplacianAttention(nn.Module):
         self.mask_value = -torch.finfo(torch.float32).max
 
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        n, e = x.shape
+        n, _ = x.shape
+        e, _ = edges.shape
 
         #
         q, k, v = self.Q(x), self.K(x), self.V(x)
@@ -155,14 +156,15 @@ class GraphLaplacianAttention(nn.Module):
         v = rearrange(v, "n (h d) -> h n d", h=self.expanded_heads)
 
         edge_k, edge_v = self.edge_K(edges), self.edge_V(edges)
-        edge_k = rearrange(edge_k, "n (h d) -> h n d", h=self.heads)*self.scale
-        edge_v = rearrange(edge_v, "n (h d) -> h n d", h=self.expanded_heads)
+        edge_k = rearrange(edge_k, "e (h d) -> h e d", h=self.heads)*self.scale
+        edge_v = rearrange(edge_v, "e (h d) -> h e d", h=self.expanded_heads)
 
+        #
         # all edge pairs
-        q = q[: edge_index[0], :]
-        k = k[: edge_index[1], :]
+        q = q.select(dim=1, index=edge_index[0])  # q[: edge_index[0], :]  # (h e d)
+        k = k.select(dim=1, index=edge_index[1])  # k[: edge_index[1], :]  # (h e d)
         # element-wsie attention
-        element_wise_attn = einsum("h p d, h p d -> h p", q, k)
+        element_wise_attn = einsum("h e d, h e d -> h e", q, k + edge_k)
         # scatter to attention map
         attention = torch.full(
             (self.heads, n, n),
@@ -170,16 +172,18 @@ class GraphLaplacianAttention(nn.Module):
             requires_grad=True,
             device=x.device,
             dtype=x.dtype
-        ).scatter_(src=element_wise_attn)
-        
+        )
+        attention[:, edge_index[0], edge_index[1]] = element_wise_attn
+        # expand attention heads
         attention = rearrange(attention, "h n m -> n m h")
         attention = self.attn_expand_proj(attention)
         attention = rearrange(attention, "n m h -> h n m")
+        # softmax
         attention = attention.softmax(dim=-1)
-        
-        attention_degree = repeat(torch.eye(n), "n m -> h n m", h=self.expanded_heads)
+        # laplacian
+        attention_degree = rearrange(torch.eye(n), "n m -> 1 n m")  # It will broadcast to (b n m) wheh "D - A"
         attention = attention_degree - attention  # D - A
-        attention = self.attention_dropout(attention)
+        attention = self.attention_dropout(attention)  # Dropout on a sparse tensor, might need high dropout rate to be effective
 
         #
         v = v + edge_v
@@ -189,6 +193,68 @@ class GraphLaplacianAttention(nn.Module):
         out = self.out_dropout(out)
 
         return out
+
+
+class GraphClassAttention(nn.Module):
+    heads: Final[int]
+    scale: Final[float]
+
+    def __init__(
+        self,
+        dim: int,
+        heads: int,
+        use_bias: float = False,
+        attention_dropout: float = 0.,
+        ff_dropout: float = 0.,
+    ) -> None:
+        super().__init__()
+
+        head_dim = dim // heads
+
+        assert (
+            head_dim * heads == dim
+        ), name_with_msg(self, f"`head_dim` ({head_dim}) * `heads` ({heads}) != `dim` ({dim})")
+
+        self.heads = heads
+
+        self.Q = nn.Linear(dim, dim, bias=use_bias)
+        self.K = nn.Linear(dim, dim, bias=use_bias)
+        self.V = nn.Linear(dim, dim, bias=use_bias)
+        self.out_linear = nn.Linear(dim, dim)
+
+        self.attention_dropout = nn.Dropout(attention_dropout)
+        self.out_dropout = nn.Dropout(ff_dropout)
+
+        self.scale = head_dim ** (-0.5)
+
+    def forward(self, cls_tokens: torch.Tensor, x: torch.Tensor, graph_portion: List[int]) -> torch.Tensor:
+        b, _ = cls_tokens.shape
+        z = torch.cat([cls_tokens, x], dim=0)  # (p d), p = n + b
+        
+        q, k, v = self.Q(cls_tokens), self.K(z), self.V(z)
+        q = rearrange(q, "b (h d) -> h b d", h=self.heads)
+        k = rearrange(k, "p (h d) -> h p d", h=self.heads)*self.scale
+        v = rearrange(v, "p (h d) -> h p d", h=self.heads)
+        
+        k_cls, k_list = k[:, : b, :], k[:, b:, :].split(graph_portion, dim=1)
+        v_cls, v_list = v[:, : b, :], v[:, b:, :].split(graph_portion, dim=1)
+        
+        outs: List[torch.Tensor] = []
+        for idx in range(len(k_list)):
+            q_graph = q[:, idx, :].unsqueeze(dim=1)
+            k_graph = torch.cat([k_cls[:, idx, :].unsqueeze(dim=1), k_list[idx]], dim=0)
+            v_graph = torch.cat([v_cls[:, idx, :].unsqueeze(dim=1), v_list[idx]], dim=0)
+            attention = einsum("h 1 d, h p d -> h 1 p", q_graph, k_graph).softmax(dim=-1)
+            attention = self.attention_dropout(attention)
+            out = einsum("h 1 p, h p d, -> h 1 d", attention, v_graph)
+            out = rearrange(out, "h 1 d -> 1 (h d)")
+            outs.append(out)
+
+        outs = torch.cat(outs, dim=0)
+        outs = self.out_linear(outs)
+        outs = self.out_dropout(outs)
+
+        return outs
 
 
 class GraphLaplacianTransformerLayer(nn.Module):
@@ -221,11 +287,48 @@ class GraphLaplacianTransformerLayer(nn.Module):
             path_dropout=path_dropout,
         )
 
-    def forward(self, x: torch.Tensor, edges: torch.Tensor, attentino_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        x = self.attn_block(x, edges, attentino_mask)
+    def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        x = self.attn_block(x, edges, edge_index)
         x = self.ff_block(x)
 
         return x
+        
+
+class GraphClassAttentionLayer(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        alpha: float,
+        ff_expand_scale: int = 4,
+        ff_dropout: float = 0.,
+        path_dropout: float = 0.,
+        **kwargs
+    ):
+        super().__init__()
+
+        self.attn_block = LayerScale(
+            dim=dim,
+            alpha=alpha,
+            core_block=GraphClassAttention,
+            ff_dropout=ff_dropout,
+            path_dropout=path_dropout,
+            **kwargs
+        )
+
+        self.ff_block = LayerScale(
+            dim=dim,
+            alpha=alpha,
+            core_block=MLP,
+            expand_dim=dim*ff_expand_scale,
+            ff_dropout=ff_dropout,
+            path_dropout=path_dropout,
+        )
+
+    def forward(self, cls_tokens: torch.Tensor, x: torch.Tensor, graph_portion: List[int]) -> torch.Tensor:
+        out = self.attn_block(cls_tokens, x, graph_portion)
+        out = self.ff_block(out)
+
+        return out
 
 
 class GraphLaplacianTransformerBackbone(nn.Module):
@@ -249,8 +352,6 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         token_dropout: float = 0.,
     ) -> None:
         super().__init__()
-
-        self.dim = dim
         
         self.token_dropout = TokenDropout(token_dropout)
         self.token_layers = nn.ModuleList([
@@ -269,9 +370,10 @@ class GraphLaplacianTransformerBackbone(nn.Module):
             ) for _ in range(num_token_layer)
         ])
 
-        self.cls_token = nn.Parameter(torch.randn(1, 1, dim), requires_grad=True)
+        self.cls_token = nn.Parameter(torch.randn(1, dim), requires_grad=True)
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
         self.cls_layers = nn.ModuleList([
-            ClassAttentionLayer(
+            GraphClassAttentionLayer(
                 dim=dim,
                 heads=heads,
                 alpha=alpha,
@@ -285,24 +387,21 @@ class GraphLaplacianTransformerBackbone(nn.Module):
 
         self.apply(self._init_weights)
 
-    def forward(self, x: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor, graph_portion: List[int]) -> torch.Tensor:
         b = x.shape[0]
 
         x = self.token_dropout(x)
         for layer in self.token_layers:
-            x = layer(x, edges)
+            x = layer(x, edges, edge_index)
 
-        cls_token = repeat(self.cls_token, "1 1 d -> b 1 d", b=b)
+        cls_tokens = repeat(self.cls_token, "1 d -> b d", b=b)
         for layer in self.cls_layers:
-            cls_token = layer(cls_token, x)
+            cls_tokens = layer(cls_tokens, x, graph_portion)
 
-        return cls_token
+        return cls_tokens
 
     @torch.jit.ignore
     def _init_weights(self, m):
-        if isinstance(m, nn.Parameter):
-            # Reference from: https://github.com/microsoft/Swin-Transformer/blob/main/models/swin_transformer.py#L110
-            nn.init.trunc_normal_(m.weight, std=0.02)
 
         if isinstance(m, nn.Linear):
             nn.init.trunc_normal_(m.weight, std=0.02)
@@ -328,8 +427,7 @@ class GraphLaplacianTransformerWithLinearClassifier(GraphLaplacianTransformerBac
             pred_act_fnc_name,
         )
 
-    def forward(self, x: torch.Tensor, edges: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, edges: torch.Tensor, graph_portion: List[int]) -> torch.Tensor:
         x = super().forward(x, edges)
-        x = rearrange(x, "b 1 d -> b d")
 
         return self.proj_head(x)

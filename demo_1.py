@@ -19,6 +19,5 @@ train_loader = DataLoader(
 )
 
 for data in train_loader:
-    d = data.to_data_list()
-    print(len(d))
-    print(d[0])
+    batch = data.batch
+    print(batch.shape)
