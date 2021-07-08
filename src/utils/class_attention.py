@@ -10,6 +10,7 @@ class ClassAttention(nn.Module):
         self,
         dim: int,
         heads: int,
+        use_bias: float = False,
         attention_dropout: float = 0.,
         ff_dropout: float = 0.,
     ) -> None:
@@ -18,6 +19,7 @@ class ClassAttention(nn.Module):
         self.attn = MultiheadAttention(
             dim,
             heads=heads,
+            use_bias=use_bias,
             attention_dropout=attention_dropout,
             ff_dropout=ff_dropout
         )

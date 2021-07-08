@@ -2,6 +2,7 @@ from typing import List, Optional
 
 import torch
 from torch import nn, einsum
+from torch._C import dtype
 try:
     from typing_extensions import Final
 except:
@@ -11,6 +12,91 @@ from einops import rearrange, repeat
 from src.utils import LayerScale, MLP, ClassAttentionLayer, TokenDropout, ProjectionHead
 from src.utils.helpers import name_with_msg, config_pop_argument
 from .config import GraphLaplacianTransformerConfig
+
+
+# class GraphLaplacianAttention(nn.Module):
+#     heads: Final[int]
+#     expanded_heads: Final[int]
+#     scale: Final[float]
+#     mask_value: Final[float]
+
+#     def __init__(
+#         self,
+#         dim: int,
+#         heads: int,
+#         head_expand_scale: float = 1.,
+#         attention_dropout: float = 0.,
+#         ff_dropout: float = 0.,
+#         use_bias: bool = False,
+#         use_edge_bias: bool = False,
+#         use_attn_expand_bias: bool = False,
+#     ) -> None:
+#         super().__init__()
+
+#         head_dim = dim // heads
+
+#         assert (
+#             head_dim * heads == dim
+#         ), name_with_msg(self, f"`head_dim` ({head_dim}) * `heads` ({heads}) != `dim` ({dim})")
+
+#         self.heads = heads
+#         self.expanded_heads = int(head_expand_scale*self.heads)  # ceiling
+
+#         self.QK = nn.Linear(dim, 2*dim, bias=use_bias)
+#         self.V = nn.Linear(dim, self.expanded_heads*head_dim, bias=use_bias)
+#         self.edge_K = nn.Linear(dim, dim, bias=use_edge_bias)
+#         self.edge_V = nn.Linear(dim, self.expanded_heads*head_dim, bias=use_edge_bias)
+#         self.depth_wise_conv = nn.Conv2d(
+#             self.heads,
+#             self.expanded_heads,
+#             kernel_size=1,
+#             groups=self.heads,
+#             bias=use_attn_expand_bias
+#         )
+#         self.out_linear = nn.Linear(self.expanded_heads*head_dim, dim)
+
+#         self.attention_dropout = nn.Dropout(attention_dropout)
+#         self.out_dropout = nn.Dropout(ff_dropout)
+
+#         self.scale = head_dim ** (-0.5)
+#         self.mask_value = -torch.finfo(torch.float32).max
+
+#     def forward(self, x: torch.Tensor, edges: torch.Tensor, attentino_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+#         _, n, _ = x.shape
+
+#         #
+#         q, k = self.QK(x).chunk(chunks=2, dim=-1)
+#         v = self.V(x)
+#         q = rearrange(q, "b n (h d) -> b h n d", h=self.heads)
+#         k = rearrange(k, "b n (h d) -> b h n d", h=self.heads)*self.scale
+#         v = rearrange(v, "b n (h d) -> b h n d", h=self.expanded_heads)
+
+#         edge_k = self.edge_K(edges)
+#         edge_v = self.edge_V(edges)
+#         edge_k = rearrange(edge_k, "b n (h d) -> b h n d", h=self.heads)*self.scale
+#         edge_v = rearrange(edge_v, "b n (h d) -> b h n d", h=self.expanded_heads)
+
+#         #
+#         attention = einsum("b h n d, b h m d -> b h n m", q, k + edge_k)
+#         attention = self.depth_wise_conv(attention)
+        
+#         if attentino_mask is not None:
+#             attention = attention.masked_fill_(attentino_mask, self.mask_value)
+
+#         attention = attention.softmax(dim=-1)
+        
+#         attention_degree = repeat(torch.eye(n), "n m -> 1 h n m", h=self.expanded_heads)
+#         attention = attention_degree - attention  # D - A
+#         attention = self.attention_dropout(attention)
+
+#         #
+#         v = v + edge_v
+#         out = einsum("b h n m, b h m d -> b h n d", attention, v)
+#         out = rearrange(out, "b h n d -> b n (h d)")
+#         out = self.out_linear(out)
+#         out = self.out_dropout(out)
+
+#         return out
 
 
 class GraphLaplacianAttention(nn.Module):
@@ -28,8 +114,9 @@ class GraphLaplacianAttention(nn.Module):
         ff_dropout: float = 0.,
         use_bias: bool = False,
         use_edge_bias: bool = False,
-        use_conv_bias: bool = False,
+        use_attn_expand_bias: bool = False,
     ) -> None:
+        super().__init__()
 
         head_dim = dim // heads
 
@@ -40,16 +127,15 @@ class GraphLaplacianAttention(nn.Module):
         self.heads = heads
         self.expanded_heads = int(head_expand_scale*self.heads)  # ceiling
 
-        self.QK = nn.Linear(dim, 2*dim, bias=use_bias)
+        self.Q = nn.Linear(dim, dim, bias=use_bias)
+        self.K = nn.Linear(dim, dim, bias=use_bias)
         self.V = nn.Linear(dim, self.expanded_heads*head_dim, bias=use_bias)
         self.edge_K = nn.Linear(dim, dim, bias=use_edge_bias)
         self.edge_V = nn.Linear(dim, self.expanded_heads*head_dim, bias=use_edge_bias)
-        self.depth_wise_conv = nn.Conv2d(
+        self.attn_expand_proj = nn.Linear(
             self.heads,
             self.expanded_heads,
-            kernel_size=1,
-            groups=self.heads,
-            bias=use_conv_bias
+            bias=use_attn_expand_bias
         )
         self.out_linear = nn.Linear(self.expanded_heads*head_dim, dim)
 
@@ -57,40 +143,48 @@ class GraphLaplacianAttention(nn.Module):
         self.out_dropout = nn.Dropout(ff_dropout)
 
         self.scale = head_dim ** (-0.5)
-        self.mask_value = -torch.finfo(torch.float32).max()
+        self.mask_value = -torch.finfo(torch.float32).max
 
-    def forward(self, x: torch.Tensor, edges: torch.Tensor, attentino_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        _, n, _ = x.shape
-
-        #
-        q, k = self.QK(x).chunk(chunks=2, dim=-1)
-        v = self.V(x)
-        q = rearrange(q, "b n (h d) -> b h n d", h=self.heads)
-        k = rearrange(k, "b n (h d) -> b h n d", h=self.heads)*self.scale
-        v = rearrange(v, "b n (h d) -> b h n d", h=self.expanded_heads)
-
-        edge_k = self.edge_K(edges)
-        edge_v = self.edge_V(edges)
-        edge_k = rearrange(edge_k, "b n (h d) -> b h n d", h=self.heads)*self.scale
-        edge_v = rearrange(edge_v, "b n (h d) -> b h n d", h=self.expanded_heads)
+    def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        n, e = x.shape
 
         #
-        attention = einsum("b h n d, b h m d -> b h n m", q, k + edge_k)
-        attention = self.depth_wise_conv(attention)
+        q, k, v = self.Q(x), self.K(x), self.V(x)
+        q = rearrange(q, "n (h d) -> h n d", h=self.heads)
+        k = rearrange(k, "n (h d) -> h n d", h=self.heads)*self.scale
+        v = rearrange(v, "n (h d) -> h n d", h=self.expanded_heads)
+
+        edge_k, edge_v = self.edge_K(edges), self.edge_V(edges)
+        edge_k = rearrange(edge_k, "n (h d) -> h n d", h=self.heads)*self.scale
+        edge_v = rearrange(edge_v, "n (h d) -> h n d", h=self.expanded_heads)
+
+        # all edge pairs
+        q = q[: edge_index[0], :]
+        k = k[: edge_index[1], :]
+        # element-wsie attention
+        element_wise_attn = einsum("h p d, h p d -> h p", q, k)
+        # scatter to attention map
+        attention = torch.full(
+            (self.heads, n, n),
+            fill_value=self.mask_value,
+            requires_grad=True,
+            device=x.device,
+            dtype=x.dtype
+        ).scatter_(src=element_wise_attn)
         
-        if attentino_mask is not None:
-            attention = attention.masked_fill_(attentino_mask, self.mask_value)
-
+        attention = rearrange(attention, "h n m -> n m h")
+        attention = self.attn_expand_proj(attention)
+        attention = rearrange(attention, "n m h -> h n m")
         attention = attention.softmax(dim=-1)
         
-        attention_degree = repeat(torch.eye(n), "n m -> 1 h n m", h=self.heads)
+        attention_degree = repeat(torch.eye(n), "n m -> h n m", h=self.expanded_heads)
         attention = attention_degree - attention  # D - A
         attention = self.attention_dropout(attention)
 
         #
         v = v + edge_v
-        out = einsum("b h n m, b h m d -> b h n d", attention, v)
-        out = rearrange("b h n d -> b n (h d)")
+        out = einsum("h n m, h m d -> h n d", attention, v)
+        out = rearrange(out, "h n d -> n (h d)")
         out = self.out_linear(out)
         out = self.out_dropout(out)
 
@@ -146,7 +240,7 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         alpha: float,
         use_bias: bool = False,
         use_edge_bias: bool = False,
-        use_conv_bias: bool = False,
+        use_attn_expand_bias: bool = False,
         head_expand_scale: float = 1.,
         ff_expand_scale: int = 4,
         ff_dropout: float = 0.,
@@ -154,7 +248,8 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         path_dropout: float = 0.,
         token_dropout: float = 0.,
     ) -> None:
-        
+        super().__init__()
+
         self.dim = dim
         
         self.token_dropout = TokenDropout(token_dropout)
@@ -165,7 +260,7 @@ class GraphLaplacianTransformerBackbone(nn.Module):
                 alpha=alpha,
                 use_bias=use_bias,
                 use_edge_bias=use_edge_bias,
-                use_conv_bias=use_conv_bias,
+                use_attn_expand_bias=use_attn_expand_bias,
                 head_expand_scale=head_expand_scale,
                 ff_expand_scale=ff_expand_scale,
                 ff_dropout=ff_dropout,

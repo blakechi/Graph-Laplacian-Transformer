@@ -41,6 +41,7 @@ class TokenWiseDropout(nn.Module):
     """
     def __init__(self, p: float = 0.) -> None:  
         super().__init__()
+
         self.dropout_rate = p
         self.scale = 1./(1. - p)
         self.bernoulli = torch.distributions.bernoulli.Bernoulli(probs=1. - p)
@@ -71,6 +72,7 @@ class TokenDropout(TokenWiseDropout):
     r"""
     Dropout for token features supported with padding masks
     """
+    
     def forward(self, x: torch.Tensor, padding_mask: Optional[torch.BoolTensor] = None, preserve_tokens: int = 0) -> torch.Tensor:
         r"""
         Args:
@@ -103,6 +105,7 @@ class PathDropout(nn.Module):
     """
     def __init__(self, p: float = 0.) -> None:  
         super().__init__()
+
         self.dropout_rate = p
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
