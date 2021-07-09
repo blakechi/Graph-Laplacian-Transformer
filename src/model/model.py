@@ -58,7 +58,6 @@ class GraphLaplacianAttention(nn.Module):
 
         self.scale = head_dim ** (-0.5)
         self.mask_value = -torch.finfo(torch.float32).max
-        # self.mask_value = 0
         
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         n, _ = x.shape
@@ -86,7 +85,6 @@ class GraphLaplacianAttention(nn.Module):
         element_wise_attn = rearrange(element_wise_attn, "h e -> e h")
         element_wise_attn = self.attn_expand_proj(element_wise_attn)
         element_wise_attn = rearrange(element_wise_attn, "e h -> h e")
-
         # scatter to attention map
         attention = torch.full(
             (self.expanded_heads, n, n),
@@ -275,6 +273,7 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         attention_dropout: float = 0.,
         path_dropout: float = 0.,
         token_dropout: float = 0.,
+        grad_clip_value: float = 1e-2,
     ) -> None:
         super().__init__()
         
@@ -309,8 +308,10 @@ class GraphLaplacianTransformerBackbone(nn.Module):
                 path_dropout=path_dropout,
             ) for _ in range(num_cls_layer)
         ])
-
+        
+        self.grad_clip_value = grad_clip_value
         self.apply(self._init_weights)
+        self.apply(self._register_grad_clip)
 
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor, graph_portion: torch.Tensor) -> torch.Tensor:
         b = graph_portion.shape[0]
@@ -327,12 +328,15 @@ class GraphLaplacianTransformerBackbone(nn.Module):
 
     @torch.jit.ignore
     def _init_weights(self, m):
-
         if isinstance(m, nn.Linear):
-            nn.init.trunc_normal_(m.weight, std=0.02)
+            nn.init.trunc_normal_(m.weight, std=.2)
 
             if m.bias is not None:
                 nn.init.uniform_(m.bias)
+
+    @torch.jit.ignore
+    def _register_grad_clip(self, m):
+        m.register_full_backward_hook(lambda m, grad_in, grad_out: nn.utils.clip_grad_value_(m.parameters(), self.grad_clip_value))
 
     @torch.jit.ignore
     def no_weight_decay(self) -> List[str]:
@@ -342,7 +346,7 @@ class GraphLaplacianTransformerBackbone(nn.Module):
     @torch.jit.ignore
     def num_parameters(self) -> int:
         return sum(torch.numel(params) for params in self.parameters())
-    
+
 
 class GraphLaplacianTransformerWithLinearClassifier(GraphLaplacianTransformerBackbone):
     def __init__(self, config: GraphLaplacianTransformerConfig = None) -> None:
