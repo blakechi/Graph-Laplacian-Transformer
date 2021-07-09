@@ -2,7 +2,6 @@ from typing import List, Optional
 
 import torch
 from torch import nn, einsum
-from torch._C import dtype
 try:
     from typing_extensions import Final
 except:
@@ -12,91 +11,6 @@ from einops import rearrange, repeat
 from src.utils import LayerScale, MLP, TokenDropout, ProjectionHead
 from src.utils.helpers import name_with_msg, config_pop_argument
 from .config import GraphLaplacianTransformerConfig
-
-
-# class GraphLaplacianAttention(nn.Module):
-#     heads: Final[int]
-#     expanded_heads: Final[int]
-#     scale: Final[float]
-#     mask_value: Final[float]
-
-#     def __init__(
-#         self,
-#         dim: int,
-#         heads: int,
-#         head_expand_scale: float = 1.,
-#         attention_dropout: float = 0.,
-#         ff_dropout: float = 0.,
-#         use_bias: bool = False,
-#         use_edge_bias: bool = False,
-#         use_attn_expand_bias: bool = False,
-#     ) -> None:
-#         super().__init__()
-
-#         head_dim = dim // heads
-
-#         assert (
-#             head_dim * heads == dim
-#         ), name_with_msg(self, f"`head_dim` ({head_dim}) * `heads` ({heads}) != `dim` ({dim})")
-
-#         self.heads = heads
-#         self.expanded_heads = int(head_expand_scale*self.heads)  # ceiling
-
-#         self.QK = nn.Linear(dim, 2*dim, bias=use_bias)
-#         self.V = nn.Linear(dim, self.expanded_heads*head_dim, bias=use_bias)
-#         self.edge_K = nn.Linear(dim, dim, bias=use_edge_bias)
-#         self.edge_V = nn.Linear(dim, self.expanded_heads*head_dim, bias=use_edge_bias)
-#         self.depth_wise_conv = nn.Conv2d(
-#             self.heads,
-#             self.expanded_heads,
-#             kernel_size=1,
-#             groups=self.heads,
-#             bias=use_attn_expand_bias
-#         )
-#         self.out_linear = nn.Linear(self.expanded_heads*head_dim, dim)
-
-#         self.attention_dropout = nn.Dropout(attention_dropout)
-#         self.out_dropout = nn.Dropout(ff_dropout)
-
-#         self.scale = head_dim ** (-0.5)
-#         self.mask_value = -torch.finfo(torch.float32).max
-
-#     def forward(self, x: torch.Tensor, edges: torch.Tensor, attentino_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-#         _, n, _ = x.shape
-
-#         #
-#         q, k = self.QK(x).chunk(chunks=2, dim=-1)
-#         v = self.V(x)
-#         q = rearrange(q, "b n (h d) -> b h n d", h=self.heads)
-#         k = rearrange(k, "b n (h d) -> b h n d", h=self.heads)*self.scale
-#         v = rearrange(v, "b n (h d) -> b h n d", h=self.expanded_heads)
-
-#         edge_k = self.edge_K(edges)
-#         edge_v = self.edge_V(edges)
-#         edge_k = rearrange(edge_k, "b n (h d) -> b h n d", h=self.heads)*self.scale
-#         edge_v = rearrange(edge_v, "b n (h d) -> b h n d", h=self.expanded_heads)
-
-#         #
-#         attention = einsum("b h n d, b h m d -> b h n m", q, k + edge_k)
-#         attention = self.depth_wise_conv(attention)
-        
-#         if attentino_mask is not None:
-#             attention = attention.masked_fill_(attentino_mask, self.mask_value)
-
-#         attention = attention.softmax(dim=-1)
-        
-#         attention_degree = repeat(torch.eye(n), "n m -> 1 h n m", h=self.expanded_heads)
-#         attention = attention_degree - attention  # D - A
-#         attention = self.attention_dropout(attention)
-
-#         #
-#         v = v + edge_v
-#         out = einsum("b h n m, b h m d -> b h n d", attention, v)
-#         out = rearrange(out, "b h n d -> b n (h d)")
-#         out = self.out_linear(out)
-#         out = self.out_dropout(out)
-
-#         return out
 
 
 class GraphLaplacianAttention(nn.Module):
@@ -144,10 +58,11 @@ class GraphLaplacianAttention(nn.Module):
 
         self.scale = head_dim ** (-0.5)
         self.mask_value = -torch.finfo(torch.float32).max
-
+        # self.mask_value = 0
+        
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         n, _ = x.shape
-        e, _ = edges.shape
+        # e, _ = edges.shape
 
         #
         q, k, v = self.Q(x), self.K(x), self.V(x)
@@ -155,39 +70,51 @@ class GraphLaplacianAttention(nn.Module):
         k = rearrange(k, "n (h d) -> h n d", h=self.heads)*self.scale
         v = rearrange(v, "n (h d) -> h n d", h=self.expanded_heads)
 
+        # all edge pairs
+        q = q.index_select(dim=1, index=edge_index[0])  # q[: edge_index[0], :]  # (h e d)
+        k = k.index_select(dim=1, index=edge_index[1])  # k[: edge_index[1], :]  # (h e d)
+        v = v.index_select(dim=1, index=edge_index[1])  # v[: edge_index[1], :]  # (h e d)
+
         edge_k, edge_v = self.edge_K(edges), self.edge_V(edges)
         edge_k = rearrange(edge_k, "e (h d) -> h e d", h=self.heads)*self.scale
         edge_v = rearrange(edge_v, "e (h d) -> h e d", h=self.expanded_heads)
 
         #
-        # all edge pairs
-        q = q.select(dim=1, index=edge_index[0])  # q[: edge_index[0], :]  # (h e d)
-        k = k.select(dim=1, index=edge_index[1])  # k[: edge_index[1], :]  # (h e d)
         # element-wsie attention
         element_wise_attn = einsum("h e d, h e d -> h e", q, k + edge_k)
+        # expand attention heads
+        element_wise_attn = rearrange(element_wise_attn, "h e -> e h")
+        element_wise_attn = self.attn_expand_proj(element_wise_attn)
+        element_wise_attn = rearrange(element_wise_attn, "e h -> h e")
+
         # scatter to attention map
         attention = torch.full(
-            (self.heads, n, n),
+            (self.expanded_heads, n, n),
             fill_value=self.mask_value,
-            requires_grad=True,
+            requires_grad=False,
             device=x.device,
             dtype=x.dtype
         )
         attention[:, edge_index[0], edge_index[1]] = element_wise_attn
-        # expand attention heads
-        attention = rearrange(attention, "h n m -> n m h")
-        attention = self.attn_expand_proj(attention)
-        attention = rearrange(attention, "n m h -> h n m")
         # softmax
-        attention = attention.softmax(dim=-1)
+        attention = nn.functional.softmax(attention, dim=-1)
         # laplacian
-        attention_degree = rearrange(torch.eye(n), "n m -> 1 n m")  # It will broadcast to (b n m) wheh "D - A"
+        attention_degree = attention.sum(dim=-1, keepdim=True)  # It will broadcast to (b n m) wheh "D - A"
         attention = attention_degree - attention  # D - A
         attention = self.attention_dropout(attention)  # Dropout on a sparse tensor, might need high dropout rate to be effective
 
         #
         v = v + edge_v
-        out = einsum("h n m, h m d -> h n d", attention, v)
+        v_square = torch.full(
+            (self.expanded_heads, n, n, v.shape[-1]),
+            fill_value=0.,
+            requires_grad=False,
+            device=x.device,
+            dtype=x.dtype
+        )
+        v_square[:, edge_index[0], edge_index[1], :] = v
+        out = einsum("h n m, h n m d -> h n m d", attention, v_square)
+        out = out.sum(dim=-2)
         out = rearrange(out, "h n d -> n (h d)")
         out = self.out_linear(out)
         out = self.out_dropout(out)
@@ -227,7 +154,7 @@ class GraphClassAttention(nn.Module):
 
         self.scale = head_dim ** (-0.5)
 
-    def forward(self, cls_tokens: torch.Tensor, x: torch.Tensor, graph_portion: List[int]) -> torch.Tensor:
+    def forward(self, cls_tokens: torch.Tensor, x: torch.Tensor, graph_portion: torch.Tensor) -> torch.Tensor:
         b, _ = cls_tokens.shape
         z = torch.cat([cls_tokens, x], dim=0)  # (p d), p = n + b
         
@@ -236,17 +163,17 @@ class GraphClassAttention(nn.Module):
         k = rearrange(k, "p (h d) -> h p d", h=self.heads)*self.scale
         v = rearrange(v, "p (h d) -> h p d", h=self.heads)
         
-        k_cls, k_list = k[:, : b, :], k[:, b:, :].split(graph_portion, dim=1)
-        v_cls, v_list = v[:, : b, :], v[:, b:, :].split(graph_portion, dim=1)
+        k_cls, k_list = k[:, : b, :], k[:, b:, :].split(graph_portion.tolist(), dim=1)
+        v_cls, v_list = v[:, : b, :], v[:, b:, :].split(graph_portion.tolist(), dim=1)
         
         outs: List[torch.Tensor] = []
         for idx in range(len(k_list)):
             q_graph = q[:, idx, :].unsqueeze(dim=1)
-            k_graph = torch.cat([k_cls[:, idx, :].unsqueeze(dim=1), k_list[idx]], dim=0)
-            v_graph = torch.cat([v_cls[:, idx, :].unsqueeze(dim=1), v_list[idx]], dim=0)
-            attention = einsum("h 1 d, h p d -> h 1 p", q_graph, k_graph).softmax(dim=-1)
+            k_graph = torch.cat([k_cls[:, idx, :].unsqueeze(dim=1), k_list[idx]], dim=1)
+            v_graph = torch.cat([v_cls[:, idx, :].unsqueeze(dim=1), v_list[idx]], dim=1)
+            attention = einsum("h l d, h p d -> h l p", q_graph, k_graph).softmax(dim=-1)  # l == 1
             attention = self.attention_dropout(attention)
-            out = einsum("h 1 p, h p d, -> h 1 d", attention, v_graph)
+            out = einsum("h l p, h p d -> h l d", attention, v_graph)
             out = rearrange(out, "h 1 d -> 1 (h d)")
             outs.append(out)
 
@@ -324,16 +251,14 @@ class GraphClassAttentionLayer(nn.Module):
             path_dropout=path_dropout,
         )
 
-    def forward(self, cls_tokens: torch.Tensor, x: torch.Tensor, graph_portion: List[int]) -> torch.Tensor:
-        out = self.attn_block(cls_tokens, x, graph_portion)
-        out = self.ff_block(out)
+    def forward(self, cls_tokens: torch.Tensor, x: torch.Tensor, graph_portion: torch.Tensor) -> torch.Tensor:
+        cls_tokens = self.attn_block(cls_tokens, x, graph_portion)
+        cls_tokens = self.ff_block(cls_tokens)
 
-        return out
+        return cls_tokens
 
 
 class GraphLaplacianTransformerBackbone(nn.Module):
-    dim: Final[int]
-
     def __init__(
         self,
         num_token_layer: int,
@@ -353,7 +278,7 @@ class GraphLaplacianTransformerBackbone(nn.Module):
     ) -> None:
         super().__init__()
         
-        self.token_dropout = TokenDropout(token_dropout)
+        # self.token_dropout = TokenDropout(token_dropout)
         self.token_layers = nn.ModuleList([
             GraphLaplacianTransformerLayer(
                 dim=dim,
@@ -387,10 +312,10 @@ class GraphLaplacianTransformerBackbone(nn.Module):
 
         self.apply(self._init_weights)
 
-    def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor, graph_portion: List[int]) -> torch.Tensor:
-        b = x.shape[0]
+    def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor, graph_portion: torch.Tensor) -> torch.Tensor:
+        b = graph_portion.shape[0]
 
-        x = self.token_dropout(x)
+        # x = self.token_dropout(x)
         for layer in self.token_layers:
             x = layer(x, edges, edge_index)
 
@@ -413,6 +338,10 @@ class GraphLaplacianTransformerBackbone(nn.Module):
     def no_weight_decay(self) -> List[str]:
         # embedding as well
         return ["cls_token", "LayerNorm.weight", "AffineTransform.alpha"]  
+
+    @torch.jit.ignore
+    def num_parameters(self) -> int:
+        return sum(torch.numel(params) for params in self.parameters())
     
 
 class GraphLaplacianTransformerWithLinearClassifier(GraphLaplacianTransformerBackbone):
@@ -422,12 +351,12 @@ class GraphLaplacianTransformerWithLinearClassifier(GraphLaplacianTransformerBac
         super().__init__(**config.__dict__)
 
         self.proj_head = ProjectionHead(
-            self.dim,
+            config.dim,
             num_classes,
             pred_act_fnc_name,
         )
 
-    def forward(self, x: torch.Tensor, edges: torch.Tensor, graph_portion: List[int]) -> torch.Tensor:
-        x = super().forward(x, edges)
+    def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor, graph_portion: torch.Tensor) -> torch.Tensor:
+        x = super().forward(x, edges, edge_index, graph_portion)
 
         return self.proj_head(x)

@@ -9,7 +9,7 @@ class GraphLaplacianTransformerConfig(object):
         num_classes: int,
         use_bias: bool = False,
         use_edge_bias: bool = False,
-        use_conv_bias: bool = False,
+        use_attn_expand_bias: bool = False,
         head_expand_scale: float = 1.,
         ff_expand_scale: int = 4,
         ff_dropout: float = 0.,
@@ -28,7 +28,7 @@ class GraphLaplacianTransformerConfig(object):
         self.num_classes = num_classes
         self.use_bias = use_bias
         self.use_edge_bias = use_edge_bias
-        self.use_conv_bias = use_conv_bias
+        self.use_attn_expand_bias = use_attn_expand_bias
         self.head_expand_scale = head_expand_scale
         self.ff_expand_scale = ff_expand_scale
         self.ff_dropout = ff_dropout
