@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List
 
 import torch
 from torch import nn, einsum
@@ -7,6 +7,7 @@ try:
 except:
     from torch.jit import Final
 from einops import rearrange, repeat
+from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
 
 from src.utils import LayerScale, MLP, TokenDropout, ProjectionHead
 from src.utils.helpers import name_with_msg, config_pop_argument
@@ -340,7 +341,6 @@ class GraphLaplacianTransformerBackbone(nn.Module):
 
     @torch.jit.ignore
     def no_weight_decay(self) -> List[str]:
-        # embedding as well
         return ["cls_token", "LayerNorm.weight", "AffineTransform.alpha"]  
 
     @torch.jit.ignore
@@ -354,6 +354,8 @@ class GraphLaplacianTransformerWithLinearClassifier(GraphLaplacianTransformerBac
         pred_act_fnc_name = config_pop_argument(config, "pred_act_fnc_name")
         super().__init__(**config.__dict__)
 
+        self.atom_encoder = AtomEncoder(config.dim)
+        self.edge_encoder = BondEncoder(config.dim)
         self.proj_head = ProjectionHead(
             config.dim,
             num_classes,
@@ -361,6 +363,13 @@ class GraphLaplacianTransformerWithLinearClassifier(GraphLaplacianTransformerBac
         )
 
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor, graph_portion: torch.Tensor) -> torch.Tensor:
+        x = self.atom_encoder(x)
+        edges = self.edge_encoder(edges)
+
         x = super().forward(x, edges, edge_index, graph_portion)
 
         return self.proj_head(x)
+
+    @torch.jit.ignore
+    def no_weight_decay(self) -> List[str]:
+        return ["Embedding"]

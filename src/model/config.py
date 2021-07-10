@@ -18,6 +18,7 @@ class GraphLaplacianTransformerConfig(object):
         token_dropout: float = 0.,
         pred_act_fnc_name: str = "ReLU",
         grad_clip_value: float = 1e-2,
+        **rest,
     ) -> None:
         super().__init__()
 
