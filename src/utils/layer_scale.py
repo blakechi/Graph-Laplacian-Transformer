@@ -1,4 +1,4 @@
-from typing import Optional, Union
+from typing import Optional, Union, List
 
 import torch
 from torch import nn
@@ -16,11 +16,15 @@ class AffineTransform(nn.Module):
     def __init__(self, dim: int, alpha: float = 1., beta: Optional[float] = 0.) -> None:
         super().__init__()
 
-        self.alpha = nn.Parameter(alpha*torch.ones(dim), requires_grad=True)
-        self.beta = nn.Parameter(beta*torch.ones(dim), requires_grad=True) if beta is not None else None
+        self.aff_alpha = nn.Parameter(alpha*torch.ones(dim), requires_grad=True)
+        self.aff_beta = nn.Parameter(beta*torch.ones(dim), requires_grad=True) if beta is not None else None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.alpha*x + self.beta if self.beta is not None else self.alpha*x
+        return self.aff_alpha*x + self.aff_beta if self.aff_beta is not None else self.aff_alpha*x
+
+    @torch.jit.ignore
+    def no_weight_decay(self) -> List[str]:
+        return ["aff_alpha", "aff_beta"] if self.aff_beta is not None else ["aff_alpha"]
 
 
 class LayerScale(AffineTransform):
@@ -42,6 +46,14 @@ class LayerScale(AffineTransform):
         self.pre_norm = pre_norm(dim) if not isinstance(pre_norm, str) and issubclass(pre_norm, nn.Module) else getattr(nn, pre_norm)(dim)
         self.core_block = core_block(dim, **kwargs) if not isinstance(core_block, str) and issubclass(core_block, nn.Module) else getattr(nn, core_block)(dim, **kwargs)
         self.path_dropout = PathDropout(path_dropout)
-
+        
     def forward(self, x: torch.Tensor, *other_inputs) -> torch.Tensor:
         return x + self.path_dropout(super().forward(self.core_block(self.pre_norm(x), *other_inputs)))
+
+    @torch.jit.ignore
+    def no_weight_decay(self) -> List[str]:
+        super_no_weight_decay = []
+        if hasattr(super(), "no_weight_decay") and callable(getattr(super(), "no_weight_decay")):
+            super_no_weight_decay = super().no_weight_decay()
+
+        return super_no_weight_decay + ["pre_norm.weight", "pre_norm.bias"]

@@ -104,27 +104,15 @@ class GraphLaplacianAttention(nn.Module):
 
         #
         v = v + edge_v
-        #
-        # v_square = torch.full(
-        #     (self.expanded_heads, n, n, v.shape[-1]),
-        #     fill_value=0.,
-        #     requires_grad=False,
-        #     device=x.device,
-        #     dtype=x.dtype
-        # )
-        # v_square[:, edge_index[0], edge_index[1], :] = v
-        # out = einsum("h n m, h n m d -> h n d", attention, v_square)
-        #
-        v_list = torch.split(edge_v, edge_index[1].bincount().tolist(), dim=1)
-        out_list = []
-        for idx in range(len(v_list)):  # 0 ~ n - 1
-            attn = attention[:, idx, :]
-            attn = attn[:, attn[0] > 0]
-            attn = rearrange(attn, "h u -> h u 1")
-            out_list.append(
-                einsum("h u l, h u d -> h d", attn, v_list[idx])
-            )
-        out = torch.stack(out_list, dim=1)
+        v_square = torch.full(
+            (self.expanded_heads, n, n, v.shape[-1]),
+            fill_value=0.,
+            requires_grad=False,
+            device=x.device,
+            dtype=x.dtype
+        )
+        v_square[:, edge_index[0], edge_index[1], :] = v
+        out = einsum("h n m, h n m d -> h n d", attention, v_square)
         
         out = rearrange(out, "h n d -> n (h d)")
         out = self.out_linear(out)
@@ -324,7 +312,7 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         
         self.grad_clip_value = grad_clip_value
         self.apply(self._init_weights)
-        self.apply(self._register_grad_clip)
+        # self.apply(self._register_grad_clip)
 
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor, graph_portion: torch.Tensor) -> torch.Tensor:
         b = graph_portion.shape[0]
@@ -353,35 +341,44 @@ class GraphLaplacianTransformerBackbone(nn.Module):
 
     @torch.jit.ignore
     def no_weight_decay(self) -> List[str]:
-        return ["cls_token", "LayerNorm.weight", "AffineTransform.alpha"]  
+        return ["cls_token"]  
 
     @torch.jit.ignore
     def num_parameters(self) -> int:
         return sum(torch.numel(params) for params in self.parameters())
 
 
-class GraphLaplacianTransformerWithLinearClassifier(GraphLaplacianTransformerBackbone):
+class GraphLaplacianTransformerWithLinearClassifier(nn.Module):
     def __init__(self, config: GraphLaplacianTransformerConfig = None) -> None:
         num_classes = config_pop_argument(config, "num_classes")
         pred_act_fnc_name = config_pop_argument(config, "pred_act_fnc_name")
-        super().__init__(**config.__dict__)
+        super().__init__()
 
-        self.atom_encoder = AtomEncoder(config.dim)
-        self.edge_encoder = BondEncoder(config.dim)
+        self.atom_embedding = AtomEncoder(config.dim)
+        self.edge_embedding = BondEncoder(config.dim)
+        self.backbone = GraphLaplacianTransformerBackbone(**config.__dict__)
         self.proj_head = ProjectionHead(
             config.dim,
             num_classes,
             pred_act_fnc_name,
         )
+        
+        self.no_weight_decays = set()
+        self.apply(self._aggregate_no_weight_decays)
 
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor, graph_portion: torch.Tensor) -> torch.Tensor:
-        x = self.atom_encoder(x)
-        edges = self.edge_encoder(edges)
+        x = self.atom_embedding(x)
+        edges = self.edge_embedding(edges)
 
-        x = super().forward(x, edges, edge_index, graph_portion)
+        x = self.backbone(x, edges, edge_index, graph_portion)
 
         return self.proj_head(x)
 
     @torch.jit.ignore
     def no_weight_decay(self) -> List[str]:
-        return ["Embedding"]
+        return ["atom_embedding", "edge_embedding"]
+
+    @torch.jit.ignore
+    def _aggregate_no_weight_decays(self, m):
+        if hasattr(m, "no_weight_decay") and callable(getattr(m, "no_weight_decay")):
+            self.no_weight_decays |= set(m.no_weight_decay())

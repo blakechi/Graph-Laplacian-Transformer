@@ -66,19 +66,19 @@ def main():
 
 
     # Optimizer
-    no_weight_decay = model.no_weight_decay()
+    no_weight_decays = model.no_weight_decays
     optimizer_grouped_parameters = [
         {
             'params': [
                 params for name, params in model.named_parameters()
-                if not any(nd in name for nd in no_weight_decay)
+                if not any(nd in name for nd in no_weight_decays)
             ],
             'weight_decay': args.weight_decay
         },
         {
             'params': [
                 params for name, params in model.named_parameters()
-                if any(nd in name for nd in no_weight_decay)
+                if any(nd in name for nd in no_weight_decays)
             ],
             'weight_decay': 0.0
         }
