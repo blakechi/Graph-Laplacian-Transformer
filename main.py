@@ -34,11 +34,13 @@ parser = set_parser(parser)
 
 
 def main():
+    # Prepare args and creat loggings
     args = parser.parse_args()
     args.device = "cpu"
-    if torch.cuda.is_available():
-        args.device = f"cuda:{args.cuda_device}"
-
+    # if torch.cuda.is_available():
+    #     torch.cuda.set_device(args.cuda_device)
+    #     args.device = f"cuda:{args.cuda_device}"
+        
     now = datetime.now()
     now = now.strftime("%Y-%m-%d-%H-%M-%S")
     run_folder = os.path.join(args.log_dir, f"run_{now}_{args.log_msg}")
@@ -55,7 +57,7 @@ def main():
     writer = SummaryWriter(log_dir=os.path.join(args.log_dir, "runs"), filename_suffix=f"{now}_{args.log_msg}")
 
     with open(os.path.join(run_folder, "args.txt"), 'w') as json_file:
-        json.dump(args.__dict__, json_file)
+        json.dump(args.__dict__, json_file, indent=4)
 
     # Model
     logger.info(f"Initializing the model...")
@@ -101,7 +103,7 @@ def main():
     dataset = PygGraphPropPredDataset(
         name=args.dataset_name,
         root=args.dataset_dir,
-        pre_transform=RemoveIsolatedNodes()
+        # pre_transform=RemoveIsolatedNodes()
     )
 
     split_idx = dataset.get_idx_split() 

@@ -27,6 +27,7 @@ def train_one_epoch(epoch, loader, model, optimizer, loss_fn, evaluator, writer,
         mask = ~torch.isnan(y)
 
         logit = model(x, edges, edge_index, graph_portion)
+        logit = logit.cpu()
 
         loss = loss_fn(logit[mask], y[mask])
         loss.backward()
@@ -78,7 +79,8 @@ def evaluate_or_test(epoch, loader, model, loss_fn, evaluator, writer, logger, a
         mask = ~torch.isnan(y)
 
         logit = model(x, edges, edge_index, graph_portion)
-    
+        logit = logit.cpu()
+
         loss = loss_fn(logit[mask], y[mask])
 
         y_true_list.append(y)

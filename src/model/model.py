@@ -98,22 +98,34 @@ class GraphLaplacianAttention(nn.Module):
         # softmax
         attention = nn.functional.softmax(attention, dim=-1)
         # laplacian
-        attention_degree = attention.sum(dim=-1, keepdim=True)  # It will broadcast to (b n m) wheh "D - A"
+        attention_degree = torch.diag_embed(attention.sum(dim=-1))  # It will broadcast to (b n m) wheh "D - A"
         attention = attention_degree - attention  # D - A
         attention = self.attention_dropout(attention)  # Dropout on a sparse tensor, might need high dropout rate to be effective
 
         #
         v = v + edge_v
-        v_square = torch.full(
-            (self.expanded_heads, n, n, v.shape[-1]),
-            fill_value=0.,
-            requires_grad=False,
-            device=x.device,
-            dtype=x.dtype
-        )
-        v_square[:, edge_index[0], edge_index[1], :] = v
-        out = einsum("h n m, h n m d -> h n m d", attention, v_square)
-        out = out.sum(dim=-2)
+        #
+        # v_square = torch.full(
+        #     (self.expanded_heads, n, n, v.shape[-1]),
+        #     fill_value=0.,
+        #     requires_grad=False,
+        #     device=x.device,
+        #     dtype=x.dtype
+        # )
+        # v_square[:, edge_index[0], edge_index[1], :] = v
+        # out = einsum("h n m, h n m d -> h n d", attention, v_square)
+        #
+        v_list = torch.split(edge_v, edge_index[1].bincount().tolist(), dim=1)
+        out_list = []
+        for idx in range(len(v_list)):  # 0 ~ n - 1
+            attn = attention[:, idx, :]
+            attn = attn[:, attn[0] > 0]
+            attn = rearrange(attn, "h u -> h u 1")
+            out_list.append(
+                einsum("h u l, h u d -> h d", attn, v_list[idx])
+            )
+        out = torch.stack(out_list, dim=1)
+        
         out = rearrange(out, "h n d -> n (h d)")
         out = self.out_linear(out)
         out = self.out_dropout(out)
