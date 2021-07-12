@@ -20,7 +20,7 @@ from parser import set_parser
 from train_and_evaluate import train_one_epoch, evaluate_or_test
 
 
-# Logger
+# Loggere
 #
 FORMAT = '%(asctime)s - %(levelname)s - line: %(lineno)d - %(message)s'
 logging.basicConfig(format=FORMAT)
@@ -37,9 +37,9 @@ def main():
     # Prepare args and creat loggings
     args = parser.parse_args()
     args.device = "cpu"
-    # if torch.cuda.is_available():
-    #     torch.cuda.set_device(args.cuda_device)
-    #     args.device = f"cuda:{args.cuda_device}"
+    if torch.cuda.is_available():
+        torch.cuda.set_device(args.cuda_device)
+        args.device = f"cuda:{args.cuda_device}"
         
     now = datetime.now()
     now = now.strftime("%Y-%m-%d-%H-%M-%S")
@@ -56,7 +56,7 @@ def main():
     
     writer = SummaryWriter(log_dir=os.path.join(args.log_dir, "runs"), filename_suffix=f"{now}_{args.log_msg}")
 
-    with open(os.path.join(run_folder, "args.txt"), 'w') as json_file:
+    with open(os.path.join(run_folder, "config.txt"), 'w') as json_file:
         json.dump(args.__dict__, json_file, indent=4)
 
     # Model
@@ -162,6 +162,16 @@ def main():
             args,
             step=(epoch + 1)*len(train_loader) - 1
         )
+        
+        torch.save({
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'metrics': train_metric,
+            },
+            os.path.join(run_folder, f"checkpoint_{now}_{epoch}_{(epoch + 1)*len(train_loader) - 1}.pt")
+        )
+        
 
         lr_scheduler.step()
 

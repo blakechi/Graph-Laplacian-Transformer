@@ -51,14 +51,23 @@ def train_one_epoch(epoch, loader, model, optimizer, loss_fn, evaluator, writer,
                     lr=optimizer.param_groups[0]['lr'],
                 )
             )
+            break
 
-    evaluation_score = evaluator.eval({
-        'y_pred': y_pred_list,
-        'y_true': y_true_list,
-    })[evaluator.eval_metric]
+    y_pred, y_true = torch.cat(y_pred_list), torch.cat(y_true_list)
     eval_key = evaluator.eval_metric
-    metrics = {"loss": losses.avg, eval_key: evaluation_score}
+    evaluation_score = evaluator.eval({
+        'y_pred': y_pred,
+        'y_true': y_true,
+    })[eval_key]
+    metrics = {
+        "loss": losses.avg,
+        eval_key: evaluation_score
+    }
     writer.add_scalar(f"Evaluation/train_{eval_key}", evaluation_score, (epoch + 1)*len(loader) - 1)  # zero-based, so "- 1"
+
+    logger.info(
+        f'Train/Evaluation[{eval_key}]: {metrics[eval_key]}'
+    )
 
     return metrics
 
@@ -100,12 +109,20 @@ def evaluate_or_test(epoch, loader, model, loss_fn, evaluator, writer, logger, a
         )
     )
 
-    evaluation_score = evaluator.eval({
-        'y_pred': y_pred_list,
-        'y_true': y_true_list,
-    })[evaluator.eval_metric]
+    y_pred, y_true = torch.cat(y_pred_list), torch.cat(y_true_list)
     eval_key = evaluator.eval_metric
-    metrics = {"loss": losses.avg, eval_key: evaluation_score}
+    evaluation_score = evaluator.eval({
+        'y_pred': y_pred,
+        'y_true': y_true,
+    })[eval_key]
+    metrics = {
+        "loss": losses.avg,
+        eval_key: evaluation_score
+    }
     writer.add_scalar(f"Evaluation/{mode}_{eval_key}", evaluation_score, (epoch + 1)*len(loader) - 1)  # zero-based, so "- 1"
+
+    logger.info(
+        f'{mode.capitalize()}/Evaluation[{eval_key}]: {metrics[eval_key]}'
+    )
 
     return metrics
