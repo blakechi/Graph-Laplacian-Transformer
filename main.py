@@ -22,7 +22,7 @@ from train_and_evaluate import train_one_epoch, evaluate_or_test
 
 # Loggere
 #
-FORMAT = '%(asctime)s - %(levelname)s - line: %(lineno)d - %(message)s'
+FORMAT = '%(asctime)s - %(levelname)s - file: %(pathname)s - line: %(lineno)d - %(message)s'
 logging.basicConfig(format=FORMAT)
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

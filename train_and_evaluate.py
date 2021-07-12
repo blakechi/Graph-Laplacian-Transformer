@@ -51,7 +51,6 @@ def train_one_epoch(epoch, loader, model, optimizer, loss_fn, evaluator, writer,
                     lr=optimizer.param_groups[0]['lr'],
                 )
             )
-            break
 
     y_pred, y_true = torch.cat(y_pred_list), torch.cat(y_true_list)
     eval_key = evaluator.eval_metric

@@ -60,8 +60,8 @@ def set_parser(parser):
                         help='weight decay (default: 1e-4)')
 
     # Procedure
-    parser.add_argument('--epochs', type=int, default=200, metavar='E',
-                        help='number of epochs to train (default: 200)')
+    parser.add_argument('--epochs', type=int, default=100, metavar='E',
+                        help='number of epochs to train (default: 100)')
     parser.add_argument('--lr', type=float, default=1e-3, metavar='LR',
                         help='learning rate (default: 1e-3)')
     parser.add_argument('--min_lr', type=float, default=1e-6, metavar='MINLR',
