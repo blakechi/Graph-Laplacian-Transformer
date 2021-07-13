@@ -9,7 +9,7 @@ except:
 from einops import rearrange, repeat
 from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
 
-from src.utils import LayerScale, MLP, TokenDropout, ProjectionHead
+from src.utils import LayerScale, MLP, ProjectionHead
 from src.utils.helpers import name_with_msg, config_pop_argument
 from .config import GraphLaplacianTransformerConfig
 
@@ -86,6 +86,7 @@ class GraphLaplacianAttention(nn.Module):
         element_wise_attn = rearrange(element_wise_attn, "h e -> e h")
         element_wise_attn = self.attn_expand_proj(element_wise_attn)
         element_wise_attn = rearrange(element_wise_attn, "e h -> h e")
+        # element_wise_attn = rearrange(element_wise_attn, "e h -> (h e)")
         # scatter to attention map
         attention = torch.full(
             (self.expanded_heads, n, n),
@@ -95,11 +96,23 @@ class GraphLaplacianAttention(nn.Module):
             dtype=x.dtype
         )
         attention[:, edge_index[0], edge_index[1]] = element_wise_attn
+        # index = torch.cat([torch.arange(0, self.expanded_heads, device=x.device).view(1, -1).repeat_interleave(e, dim=1), edge_index.repeat(1, self.expanded_heads)], dim=0)
+        # attention = torch.sparse_coo_tensor(
+        #     index,
+        #     element_wise_attn,
+        #     (self.expanded_heads, n, n),
+        #     requires_grad=False,
+        #     device=x.device,
+        #     dtype=x.dtype
+        # )
         # softmax
         attention = nn.functional.softmax(attention, dim=-1)
+        # attention = torch.sparse.softmax(attention, dim=2)
         # laplacian
-        attention_degree = torch.diag_embed(attention.sum(dim=-1))  # It will broadcast to (b n m) wheh "D - A"
-        attention = attention_degree - attention  # D - A
+        # attention_degree = torch.diag_embed(attention.sum(dim=-1))  # It will broadcast to (b n m) wheh "D - A"
+        # attention = -attention_degree + attention  # D - A
+        # attention_degree = torch.diag_embed(torch.sparse.sum(attention, dim=2).to_dense())  # It will broadcast to (b n m) wheh "D - A"
+        # attention = attention_degree - attention.to_dense()  # D - A
         attention = self.attention_dropout(attention)  # Dropout on a sparse tensor, might need high dropout rate to be effective
 
         #
@@ -112,8 +125,18 @@ class GraphLaplacianAttention(nn.Module):
             dtype=x.dtype
         )
         v_square[:, edge_index[0], edge_index[1], :] = v
+        # v = rearrange(v, "h e d -> (h e) d")
+        # v_square = torch.sparse_coo_tensor(
+        #     index,
+        #     v,
+        #     (self.expanded_heads, n, n, v.shape[-1]),
+        #     requires_grad=False,
+        #     device=x.device,
+        #     dtype=x.dtype
+        # )
+        #
         out = einsum("h n m, h n m d -> h n d", attention, v_square)
-        
+        # out = einsum("h n m, h n m d -> h n d", attention, v_square.to_dense())
         out = rearrange(out, "h n d -> n (h d)")
         out = self.out_linear(out)
         out = self.out_dropout(out)
@@ -273,12 +296,10 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         ff_dropout: float = 0.,
         attention_dropout: float = 0.,
         path_dropout: float = 0.,
-        token_dropout: float = 0.,
         grad_clip_value: float = 1e-2,
     ) -> None:
         super().__init__()
         
-        # self.token_dropout = TokenDropout(token_dropout)
         self.token_layers = nn.ModuleList([
             GraphLaplacianTransformerLayer(
                 dim=dim,
@@ -317,7 +338,6 @@ class GraphLaplacianTransformerBackbone(nn.Module):
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor, graph_portion: torch.Tensor) -> torch.Tensor:
         b = graph_portion.shape[0]
 
-        # x = self.token_dropout(x)
         for layer in self.token_layers:
             x = layer(x, edges, edge_index)
 

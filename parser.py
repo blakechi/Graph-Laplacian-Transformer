@@ -32,12 +32,12 @@ def set_parser(parser):
                         metavar='N', help='Lambda in layer scale')
     parser.add_argument('--num_classes', default=128, type=int,
                         metavar='N', help='Number of classes')
-    parser.add_argument('--use_bias', default=False, type=bool,
-                        metavar='N', help='Whether to use bias for Q, K, V projection layers')
-    parser.add_argument('--use_edge_bias', default=False, type=bool,
-                        metavar='N', help='Whether to use bias for edge_K, edge_V projection layers')
-    parser.add_argument('--use_attn_expand_bias', default=False, type=bool,
-                        metavar='N', help='Whether to use bias for the attention expansion layers')
+    parser.add_argument('--use_bias', action='store_true',
+                        help='Whether to use bias for Q, K, V projection layers')
+    parser.add_argument('--use_edge_bias', action='store_true',
+                        help='Whether to use bias for edge_K, edge_V projection layers')
+    parser.add_argument('--use_attn_expand_bias', action='store_true',
+                        help='Whether to use bias for the attention expansion layers')
     parser.add_argument('--head_expand_scale', default=1., type=float,
                         metavar='N', help='Head expansion scale. expanded_heads = ceil(head_expand_scale*heads)')
     parser.add_argument('--ff_expand_scale', default=4, type=int,
@@ -47,8 +47,6 @@ def set_parser(parser):
     parser.add_argument('--attention_dropout', default=0., type=float,
                         metavar='N', help='')
     parser.add_argument('--path_dropout', default=0., type=float,
-                        metavar='N', help='')
-    parser.add_argument('--token_dropout', default=0., type=float,
                         metavar='N', help='')
     parser.add_argument('--grad_clip_value', default=1e-2, type=float,
                         metavar='N', help='')

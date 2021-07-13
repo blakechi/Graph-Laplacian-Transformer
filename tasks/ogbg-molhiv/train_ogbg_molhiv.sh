@@ -1,0 +1,26 @@
+nohup python main.py \
+    --log_msg base \
+    --log_dir /media/storage0/pwchi/Graph_Laplacian_Transformer \
+    --dataset_dir /media/data/pwchi/Graph_Laplacian_Transformer \
+    --dataset_name ogbg-molhiv \
+    --num_workers 2 \
+    --cuda_device 1 \
+    --epoch 50 \
+    --batch_size 32 \
+    --lr 0.001 \
+    --num_token_layer 8 \
+    --num_cls_layer 2 \
+    --dim 128 \
+    --heads 4 \
+    --head_expand_scale 2 \
+    --alpha 0.0001 \
+    --ff_dropout 0.1 \
+    --attention_dropout 0.1 \
+    --path_dropout 0.1 \
+    --min_lr 0.000001 \
+    --grad_clip_value 1e-1 \
+    --num_classes 1 \
+    --use_bias \
+    --use_edge_bias \
+    --use_attn_expand_bias \
+    &

@@ -1,14 +1,10 @@
-"""
-Reference from: https://github.com/rwightman/pytorch-image-models/blob/master/train.py
-"""
-
 import time
 
 import torch
 from timm.utils import AverageMeter
 
 
-def train_one_epoch(epoch, loader, model, optimizer, loss_fn, evaluator, writer, logger, args):    
+def train_one_epoch(epoch, loader, model, optimizer, lr_scheduler, loss_fn, evaluator, writer, logger, args):    
     last_idx = len(loader) - 1
     batch_time = AverageMeter()
     losses = AverageMeter()
@@ -19,26 +15,26 @@ def train_one_epoch(epoch, loader, model, optimizer, loss_fn, evaluator, writer,
     for batch_idx, data in enumerate(loader):
         optimizer.zero_grad()
 
-        x, edges, edge_index, batch, y = data.x, data.edge_attr, data.edge_index.to(torch.long), data.batch, data.y
+        x, edges, edge_index, batch, y = data.x, data.edge_attr, data.edge_index.to(torch.long), data.batch, data.y.to(torch.float)
         x = x.to(args.device)
         edges = edges.to(args.device)
         edge_index = edge_index.to(args.device)
         graph_portion = batch.bincount().to(args.device)
+        y = y.to(args.device)
         mask = ~torch.isnan(y)
 
         logit = model(x, edges, edge_index, graph_portion)
-        logit = logit.cpu()
 
         loss = loss_fn(logit[mask], y[mask])
         loss.backward()
         optimizer.step()
 
         batch_time.update(time.time() - start_time)
-        y_true_list.append(y)
-        y_pred_list.append(logit)
+        y_pred_list.append(logit.detach().cpu())
+        y_true_list.append(y.detach().cpu())
         losses.update(loss.item(), args.batch_size)
         writer.add_scalar("Loss/train", losses.val, epoch*len(loader) + batch_idx)  # Steps
-
+        
         if batch_idx != 0 and batch_idx % args.logging_interval == 0:
             logger.info(
                 'Train: {} [{:>4d}/{} ({:>3.0f}%)]  '
@@ -52,21 +48,25 @@ def train_one_epoch(epoch, loader, model, optimizer, loss_fn, evaluator, writer,
                 )
             )
 
-    y_pred, y_true = torch.cat(y_pred_list), torch.cat(y_true_list)
+        lr_scheduler.step()
+
+    y_pred = torch.cat(y_pred_list, dim=0).numpy()
+    y_true = torch.cat(y_true_list, dim=0).numpy()
     eval_key = evaluator.eval_metric
     evaluation_score = evaluator.eval({
         'y_pred': y_pred,
         'y_true': y_true,
     })[eval_key]
+
+    writer.add_scalar(f"Evaluation/train_{eval_key}_epoch", evaluation_score, (epoch + 1)*len(loader) - 1)  # zero-based, so "- 1"
+    logger.info(
+        f'Train/Evaluation[{eval_key}]: {evaluation_score}'
+    )
+
     metrics = {
         "loss": losses.avg,
-        eval_key: evaluation_score
+        eval_key: evaluation_score,
     }
-    writer.add_scalar(f"Evaluation/train_{eval_key}", evaluation_score, (epoch + 1)*len(loader) - 1)  # zero-based, so "- 1"
-
-    logger.info(
-        f'Train/Evaluation[{eval_key}]: {metrics[eval_key]}'
-    )
 
     return metrics
 
@@ -79,20 +79,20 @@ def evaluate_or_test(epoch, loader, model, loss_fn, evaluator, writer, logger, a
     model.eval()
     start_time = time.time()
     for batch_idx, data in enumerate(loader):
-        x, edges, edge_index, batch, y = data.x, data.edge_attr, data.edge_index.to(torch.long), data.batch, data.y
+        x, edges, edge_index, batch, y = data.x, data.edge_attr, data.edge_index.to(torch.long), data.batch, data.y.to(torch.float)
         x = x.to(args.device)
         edges = edges.to(args.device)
         edge_index = edge_index.to(args.device)
         graph_portion = batch.bincount().to(args.device)
+        y = y.to(args.device)
         mask = ~torch.isnan(y)
 
         logit = model(x, edges, edge_index, graph_portion)
-        logit = logit.cpu()
 
         loss = loss_fn(logit[mask], y[mask])
 
-        y_true_list.append(y)
-        y_pred_list.append(logit)
+        y_pred_list.append(logit.detach().cpu())
+        y_true_list.append(y.detach().cpu())
         losses.update(loss.item(), args.batch_size)
 
     end_time = time.time()
@@ -108,20 +108,22 @@ def evaluate_or_test(epoch, loader, model, loss_fn, evaluator, writer, logger, a
         )
     )
 
-    y_pred, y_true = torch.cat(y_pred_list), torch.cat(y_true_list)
+    y_pred = torch.cat(y_pred_list, dim=0).numpy()
+    y_true = torch.cat(y_true_list, dim=0).numpy()
     eval_key = evaluator.eval_metric
     evaluation_score = evaluator.eval({
         'y_pred': y_pred,
         'y_true': y_true,
     })[eval_key]
+
+    writer.add_scalar(f"Evaluation/{mode}_{eval_key}_epoch", evaluation_score, (epoch + 1)*len(loader) - 1)  # zero-based, so "- 1"
+    logger.info(
+        f'{mode.capitalize()}/Evaluation[{eval_key}]: {evaluation_score}'
+    )
+
     metrics = {
         "loss": losses.avg,
         eval_key: evaluation_score
     }
-    writer.add_scalar(f"Evaluation/{mode}_{eval_key}", evaluation_score, (epoch + 1)*len(loader) - 1)  # zero-based, so "- 1"
-
-    logger.info(
-        f'{mode.capitalize()}/Evaluation[{eval_key}]: {metrics[eval_key]}'
-    )
 
     return metrics

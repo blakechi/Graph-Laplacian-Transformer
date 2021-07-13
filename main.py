@@ -14,6 +14,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.data import DataLoader
 from torch_geometric.transforms import RemoveIsolatedNodes
 from ogb.graphproppred import PygGraphPropPredDataset, Evaluator
+from warmup_scheduler import GradualWarmupScheduler
 
 from src.model import GraphLaplacianTransformerConfig, GraphLaplacianTransformerWithLinearClassifier
 from parser import set_parser
@@ -43,7 +44,10 @@ def main():
         
     now = datetime.now()
     now = now.strftime("%Y-%m-%d-%H-%M-%S")
-    run_folder = os.path.join(args.log_dir, f"run_{now}_{args.log_msg}")
+    task_folder = os.path.join(args.log_dir, args.dataset_name)
+    run_folder = os.path.join(task_folder, f"run_{now}_{args.log_msg}")
+    if not os.path.exists(task_folder):
+        os.mkdir(task_folder)
     if not os.path.exists(run_folder):
         os.mkdir(run_folder)
 
@@ -54,48 +58,10 @@ def main():
     file_handler.setLevel(logging.INFO)
     logger.addHandler(file_handler)
     
-    writer = SummaryWriter(log_dir=os.path.join(args.log_dir, "runs"), filename_suffix=f"{now}_{args.log_msg}")
+    writer = SummaryWriter(log_dir=os.path.join(task_folder, "runs"), filename_suffix=f"{now}_{args.log_msg}")
 
     with open(os.path.join(run_folder, "config.txt"), 'w') as json_file:
         json.dump(args.__dict__, json_file, indent=4)
-
-    # Model
-    logger.info(f"Initializing the model...")
-    config = GraphLaplacianTransformerConfig(**args.__dict__)
-    model = GraphLaplacianTransformerWithLinearClassifier(config)
-
-
-    # Optimizer
-    no_weight_decays = model.no_weight_decays
-    optimizer_grouped_parameters = [
-        {
-            'params': [
-                params for name, params in model.named_parameters()
-                if not any(nd in name for nd in no_weight_decays)
-            ],
-            'weight_decay': args.weight_decay
-        },
-        {
-            'params': [
-                params for name, params in model.named_parameters()
-                if any(nd in name for nd in no_weight_decays)
-            ],
-            'weight_decay': 0.0
-        }
-    ]
-    optimizer = torch.optim.Adam(
-        optimizer_grouped_parameters,
-        lr=args.lr,
-        betas=args.betas,
-    )
-
-
-    # Scheduler
-    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=args.epochs,
-        eta_min=args.min_lr
-    )
 
 
     # Dataset
@@ -130,8 +96,53 @@ def main():
     )
 
 
+    # Model
+    logger.info(f"Initializing the model...")
+    config = GraphLaplacianTransformerConfig(**args.__dict__)
+    model = GraphLaplacianTransformerWithLinearClassifier(config)
+
+
+    # Optimizer
+    no_weight_decays = model.no_weight_decays
+    optimizer_grouped_parameters = [
+        {
+            'params': [
+                params for name, params in model.named_parameters()
+                if not any(nd in name for nd in no_weight_decays)
+            ],
+            'weight_decay': args.weight_decay
+        },
+        {
+            'params': [
+                params for name, params in model.named_parameters()
+                if any(nd in name for nd in no_weight_decays)
+            ],
+            'weight_decay': 0.0
+        }
+    ]
+    optimizer = torch.optim.Adam(
+        optimizer_grouped_parameters,
+        lr=args.lr,
+        betas=args.betas,
+    )
+
+
+    # Scheduler
+    lr_scheduler_tail = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=args.epochs*len(train_loader),
+        eta_min=args.min_lr
+    )
+    lr_scheduler = GradualWarmupScheduler(
+        optimizer,
+        multiplier=1e1,
+        total_epoch=2*len(train_loader),
+        after_scheduler=lr_scheduler_tail
+    )
+
+
     # Loss & Evaluator
-    loss_fn = torch.nn.BCEWithLogitsLoss()
+    loss_fn = torch.nn.BCEWithLogitsLoss().to(args.device)
     evaluator = Evaluator(name=args.dataset_name)
 
 
@@ -144,6 +155,7 @@ def main():
             train_loader,
             model,
             optimizer,
+            lr_scheduler,
             loss_fn,
             evaluator,
             writer,
@@ -167,13 +179,11 @@ def main():
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
-            'metrics': train_metric,
+            'train_metric': train_metric,
+            'valid_metric': valid_metric,
             },
             os.path.join(run_folder, f"checkpoint_{now}_{epoch}_{(epoch + 1)*len(train_loader) - 1}.pt")
         )
-        
-
-        lr_scheduler.step()
 
     test_metric = evaluate_or_test(
         epoch,

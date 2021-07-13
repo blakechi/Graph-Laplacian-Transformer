@@ -1,14 +1,14 @@
-python main.py \
-    --log_msg e_50_b_48 \
+nohup python main.py \
+    --log_msg base_no_lap \
     --log_dir /media/storage0/pwchi/Graph_Laplacian_Transformer \
     --dataset_dir /media/data/pwchi/Graph_Laplacian_Transformer \
     --dataset_name ogbg-molpcba \
     --num_workers 2 \
     --cuda_device 1 \
     --epoch 50 \
-    --batch_size 48 \
-    --lr 0.0005 \
-    --num_token_layer 8 \
+    --batch_size 32 \
+    --lr 0.001 \
+    --num_token_layer 6 \
     --num_cls_layer 2 \
     --dim 128 \
     --heads 4 \
@@ -19,3 +19,8 @@ python main.py \
     --path_dropout 0.1 \
     --min_lr 0.000001 \
     --grad_clip_value 1e-1 \
+    --num_classes 128 \
+    --use_bias \
+    --use_edge_bias \
+    --use_attn_expand_bias \
+    &

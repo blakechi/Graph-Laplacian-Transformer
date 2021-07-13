@@ -15,7 +15,6 @@ class GraphLaplacianTransformerConfig(object):
         ff_dropout: float = 0.,
         attention_dropout: float = 0.,
         path_dropout: float = 0.,
-        token_dropout: float = 0.,
         pred_act_fnc_name: str = "ReLU",
         grad_clip_value: float = 1e-2,
         **rest,
@@ -36,6 +35,5 @@ class GraphLaplacianTransformerConfig(object):
         self.ff_dropout = ff_dropout
         self.attention_dropout = attention_dropout
         self.path_dropout = path_dropout
-        self.token_dropout = token_dropout
         self.pred_act_fnc_name = pred_act_fnc_name
         self.grad_clip_value = grad_clip_value
