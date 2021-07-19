@@ -1,4 +1,5 @@
-import numpy as np
+from torch_geometric.transforms.remove_isolated_nodes import RemoveIsolatedNodes
+from tqdm import tqdm
 import torch
 from torch_geometric.data import DataLoader
 from ogb.graphproppred import PygGraphPropPredDataset, Evaluator
@@ -8,35 +9,36 @@ from src.model import GraphLaplacianTransformerConfig, GraphLaplacianTransformer
 
 
 if __name__ == "__main__":
-    dataset_name = "ogbg-molpcba"
+    torch.cuda.set_device(2)
+    dataset_name = "ogbg-molhiv"
     batch_size = 32
     num_workers = 1
     pin_memory = False
 
     #
-    glt_config = GraphLaplacianTransformerConfig(
-        6,
-        2,
-        128,
-        4,
-        1e-4,
-        128,
-        use_bias=False,
-        use_edge_bias=False,
-        use_attn_expand_bias=False,
-        head_expand_scale=1,
-        ff_dropout=0.1,
-        attention_dropout=0.1,
-        path_dropout=0.05,
-    )
-    glt = GraphLaplacianTransformerWithLinearClassifier(glt_config)
+    # glt_config = GraphLaplacianTransformerConfig(
+    #     6,
+    #     2,
+    #     128,
+    #     4,
+    #     1e-4,
+    #     128,
+    #     use_bias=False,
+    #     use_edge_bias=False,
+    #     use_attn_expand_bias=False,
+    #     head_expand_scale=1,
+    #     ff_dropout=0.1,
+    #     attention_dropout=0.1,
+    #     path_dropout=0.05,
+    # )
+    # glt = GraphLaplacianTransformerWithLinearClassifier(glt_config)
     # print(glt)
 
     #
     atom_encoder = AtomEncoder(emb_dim = 128)
     bond_encoder = BondEncoder(emb_dim = 128)
     evaluator = Evaluator(name=dataset_name)
-    dataset = PygGraphPropPredDataset(name=dataset_name) 
+    dataset = PygGraphPropPredDataset(name=dataset_name, transform=RemoveIsolatedNodes()) 
 
     split_idx = dataset.get_idx_split() 
     train_loader = DataLoader(
@@ -52,41 +54,42 @@ if __name__ == "__main__":
     torch.autograd.set_detect_anomaly(True)
     y_true, y_pred = [], []
 
-    with torch.no_grad():
-        for data in train_loader:
-            x, edges, edge_index, batch, y = data.x, data.edge_attr, data.edge_index.to(torch.long), data.batch, data.y.to(torch.float)
-            graph_portion = batch.bincount()
-            mask = ~torch.isnan(y)
-            y = y.numpy()
-            print(y)
-            y[~mask] = np.nan
-            print(y)
-            assert False
-            out = glt(x, edges, edge_index, graph_portion)
+    for data in tqdm(train_loader):
+        # x, edges, edge_index, batch, y = data.x, data.edge_attr, data.edge_index.to(torch.long), data.batch, data.y.to(torch.float)
+        # graph_portion = batch.bincount()
+        # mask = ~torch.isnan(y)
 
-            loss = criterian(out[mask], y[mask])
-            # loss.backward()
+        assert data.edge_index.max() < data.num_nodes
+        assert data.edge_index.max() < data.x.size(0)
 
-            # for name, param in glt.named_parameters():
-            #     if "token_layers" in name:
-            #         print(name, param.grad.norm())
+    
+        # out = glt(x, edges, edge_index, graph_portion)
+        # print(out.requires_grad)
+        # print(out.shape, y.shape)
+        # loss = criterian(out[mask], y[mask])
+        # loss.backward()
 
-            # eval_key = evaluator.eval_metric
-            # evaluation_score = evaluator.eval({
-            #     'y_pred': out,
-            #     'y_true': y,
-            # })[eval_key]
-            # print("evaluation_score: ", evaluation_score)
-            y_true.append(y)
-            y_pred.append(out)
+        # for name, param in glt.named_parameters():
+        #     if "token_layers" in name:
+        #         print(name, param.grad.norm())
 
-    y_true = torch.cat(y_true)
-    y_pred = torch.cat(y_pred)
-    eval_key = evaluator.eval_metric
-    evaluation_score = evaluator.eval({
-        'y_pred': y_pred,
-        'y_true': y_true,
-    })[eval_key]
-    print("evaluation_score: ", evaluation_score)
+        # assert False
+        # eval_key = evaluator.eval_metric
+        # evaluation_score = evaluator.eval({
+        #     'y_pred': out,
+        #     'y_true': y,
+        # })[eval_key]
+        # print("evaluation_score: ", evaluation_score)
+        # y_true.append(y)
+        # y_pred.append(out)
+
+    # y_true = torch.cat(y_true)
+    # y_pred = torch.cat(y_pred)
+    # eval_key = evaluator.eval_metric
+    # evaluation_score = evaluator.eval({
+    #     'y_pred': y_pred,
+    #     'y_true': y_true,
+    # })[eval_key]
+    # print("evaluation_score: ", evaluation_score)
         
 

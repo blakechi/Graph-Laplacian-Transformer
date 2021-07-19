@@ -60,7 +60,7 @@ def main():
     
     writer = SummaryWriter(log_dir=os.path.join(task_folder, "runs"), filename_suffix=f"{now}_{args.log_msg}")
 
-    with open(os.path.join(run_folder, "config.txt"), 'w') as json_file:
+    with open(os.path.join(run_folder, "config.json"), 'w') as json_file:
         json.dump(args.__dict__, json_file, indent=4)
 
 
@@ -192,6 +192,7 @@ def main():
         loss_fn,
         evaluator,
         writer,
+        logger,
         args,
         step=(epoch + 1)*len(train_loader) - 1,
         mode='test'

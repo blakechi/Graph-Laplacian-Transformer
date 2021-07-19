@@ -69,4 +69,10 @@ def set_parser(parser):
     parser.add_argument('--logging_interval', type=int, default=32, metavar='N',
                         help='logging per N batches')
 
+    # Checkpoints
+    parser.add_argument('--checkpoint_name', default='', type=str,
+                        metavar='CHECKPOINTNAME', help='Checkpoint file name')
+    parser.add_argument('--checkpoint_folder', default='', type=str,
+                        metavar='CHECKPOINTFOLDER', help='The folder contains the checkpoint')
+
     return parser

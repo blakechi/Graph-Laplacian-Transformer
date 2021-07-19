@@ -1,5 +1,5 @@
 nohup python main.py \
-    --log_msg base \
+    --log_msg split_node \
     --log_dir /media/storage0/pwchi/Graph_Laplacian_Transformer \
     --dataset_dir /media/data/pwchi/Graph_Laplacian_Transformer \
     --dataset_name ogbg-molhiv \
@@ -13,7 +13,7 @@ nohup python main.py \
     --dim 128 \
     --heads 4 \
     --head_expand_scale 2 \
-    --alpha 0.0001 \
+    --alpha 1 \
     --ff_dropout 0.1 \
     --attention_dropout 0.1 \
     --path_dropout 0.1 \
