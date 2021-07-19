@@ -140,3 +140,5 @@ cython_debug/
 /logging
 /dataset
 nohup.out
+inspect_script.sh
+inspect_model.py
