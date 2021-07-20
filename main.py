@@ -12,11 +12,12 @@ from datetime import datetime
 import torch
 from torch.utils.tensorboard import SummaryWriter
 from torch_geometric.data import DataLoader
-from torch_geometric.transforms import RemoveIsolatedNodes
+# from torch_geometric.transforms import RemoveIsolatedNodes
 from ogb.graphproppred import PygGraphPropPredDataset, Evaluator
 from warmup_scheduler import GradualWarmupScheduler
 
 from src.model import GraphLaplacianTransformerConfig, GraphLaplacianTransformerWithLinearClassifier
+from src.utils import RemoveIsolatedNodes
 from parser import set_parser
 from train_and_evaluate import train_one_epoch, evaluate_or_test
 
@@ -69,9 +70,9 @@ def main():
     dataset = PygGraphPropPredDataset(
         name=args.dataset_name,
         root=args.dataset_dir,
-        # pre_transform=RemoveIsolatedNodes()
+        pre_transform=RemoveIsolatedNodes()
     )
-
+    
     split_idx = dataset.get_idx_split() 
     train_loader = DataLoader(
         dataset[split_idx["train"]],
@@ -128,17 +129,17 @@ def main():
 
 
     # Scheduler
-    lr_scheduler_tail = torch.optim.lr_scheduler.CosineAnnealingLR(
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
         T_max=args.epochs*len(train_loader),
         eta_min=args.min_lr
     )
-    lr_scheduler = GradualWarmupScheduler(
-        optimizer,
-        multiplier=1e1,
-        total_epoch=2*len(train_loader),
-        after_scheduler=lr_scheduler_tail
-    )
+    # lr_scheduler = GradualWarmupScheduler(
+    #     optimizer,
+    #     multiplier=args.max_lr/args.lr,
+    #     total_epoch=1*len(train_loader),
+    #     after_scheduler=lr_scheduler_tail
+    # )
 
 
     # Loss & Evaluator

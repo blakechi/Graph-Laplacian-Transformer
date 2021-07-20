@@ -48,8 +48,7 @@ class LayerScale(AffineTransform):
         self.path_dropout = PathDropout(path_dropout)
         
     def forward(self, x: torch.Tensor, *other_inputs) -> torch.Tensor:
-        return x + self.core_block(self.pre_norm(x), *other_inputs)
-        # return x + self.path_dropout(super().forward(self.core_block(self.pre_norm(x), *other_inputs)))
+        return x + self.path_dropout(super().forward(self.core_block(self.pre_norm(x), *other_inputs)))
 
     @torch.jit.ignore
     def no_weight_decay(self) -> List[str]:

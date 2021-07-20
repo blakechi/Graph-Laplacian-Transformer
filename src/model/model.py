@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, OrderedDict
 
 import torch
 from torch import nn, einsum
@@ -8,7 +8,7 @@ except:
     from torch.jit import Final
 from torch_geometric.utils import softmax as sparse_softmax
 from torch_scatter import scatter
-from einops import rearrange
+from einops import rearrange, repeat
 from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
 
 from src.utils import LayerScale, MLP, ProjectionHead
@@ -20,7 +20,6 @@ class GraphLaplacianAttention(nn.Module):
     heads: Final[int]
     expanded_heads: Final[int]
     scale: Final[float]
-    mask_value: Final[float]
 
     def __init__(
         self,
@@ -56,7 +55,6 @@ class GraphLaplacianAttention(nn.Module):
         self.out_dropout = nn.Dropout(ff_dropout)
 
         self.scale = head_dim ** (-0.5)
-        self.mask_value = -torch.finfo(torch.float32).max
         
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
         n, _ = x.shape
@@ -67,7 +65,6 @@ class GraphLaplacianAttention(nn.Module):
         q = rearrange(q, "n (h d) -> h n d", h=self.heads)
         k = rearrange(k, "n (h d) -> h n d", h=self.heads)
         v_non_scatter = rearrange(v, "n (h d) -> h n d", h=self.expanded_heads)
-
         # all edge pairs
         q = q.index_select(dim=1, index=edge_index[0])  # q[:, edge_index[0], :] (h e d)
         k = k.index_select(dim=1, index=edge_index[1])  # k[:, edge_index[1], :] (h e d)
@@ -78,79 +75,44 @@ class GraphLaplacianAttention(nn.Module):
         edge_v = rearrange(edge_v, "e (h d) -> h e d", h=self.expanded_heads)
 
         #
-        # element-wsie attention
-        element_wise_attn = einsum("h e d, h e d -> h e", q, (k + edge_k))
-        # expand attention heads
-        element_wise_attn = rearrange(element_wise_attn, "h e -> e h")
-        element_wise_attn = self.attn_expand_proj(element_wise_attn)
-        # element_wise_attn = rearrange(element_wise_attn, "e h -> h e")
-        # element_wise_attn = rearrange(element_wise_attn, "e h -> (h e)")
-        # scatter to attention map
-        # attention = torch.full(
-        #     (self.expanded_heads, n, n),
-        #     fill_value=self.mask_value,
-        #     requires_grad=False,
-        #     device=x.device,
-        #     dtype=x.dtype
-        # )
-        # attention[:, edge_index[0], edge_index[1]] = element_wise_attn
-        # index = torch.cat([torch.arange(0, self.expanded_heads, device=x.device).view(1, -1).repeat_interleave(e, dim=1), edge_index.repeat(1, self.expanded_heads)], dim=0)
-        # attention = torch.sparse_coo_tensor(
-        #     index,
-        #     element_wise_attn,
-        #     (self.expanded_heads, n, n),
-        #     requires_grad=False,
-        #     device=x.device,
-        #     dtype=x.dtype
-        # )
-
+        attention = einsum("h e d, h e d -> h e", q, (k + edge_k)*self.scale)  # element-wsie attention
+        attention = rearrange(attention, "h e -> e h")
+        attention = self.attn_expand_proj(attention)  # expand attention heads
+        attention_list = attention.split(1, dim=1)
         # softmax
-        # attention = attention.softmax(dim=-1)
-        # attention = torch.sparse.softmax(attention, dim=2)
-        element_wise_attns = element_wise_attn.split(1, dim=1)
-        element_wise_attns = [sparse_softmax(element_wise_attns[head_idx], index=edge_index[0], num_nodes=n) for head_idx in range(self.expanded_heads)]
-        element_wise_attn = torch.cat(element_wise_attns, dim=1)
-        element_wise_attn = rearrange(element_wise_attn, "e h -> h e")
-        # laplacian
-        # attention_degree = torch.diag_embed(attention.sum(dim=-1))  # It will broadcast to (b n m) wheh "D - A"
-        # attention = attention_degree - attention  # D - A
-        attention = element_wise_attn
-        # attention_degree = torch.diag_embed(torch.sparse.sum(attention, dim=2).to_dense())  # It will broadcast to (b n m) wheh "D - A"
-        # attention = attention_degree - attention.to_dense()  # D - A
-        attention = self.attention_dropout(attention)  # Dropout on a sparse tensor, might need high dropout rate to be effective
+        attention_list = [
+            sparse_softmax(
+                attention_list[head_idx],
+                index=edge_index[0],
+                num_nodes=n
+            ) for head_idx in range(self.expanded_heads)
+        ]
+        attention = torch.cat(attention_list, dim=1)
+        attention = rearrange(attention, "e h -> h e")
+        attention = self.attention_dropout(attention)  
 
         #
-        # v = v + edge_v
-        # v_square = torch.full(
-        #     (self.expanded_heads, n, n, v.shape[-1]),
-        #     fill_value=0.,
-        #     requires_grad=False,
-        #     device=x.device,
-        #     dtype=x.dtype
-        # )
-        # v_square[:, edge_index[0], edge_index[1], :] = v
-        # v = rearrange(v, "h e d -> (h e) d")
-        # v_square = torch.sparse_coo_tensor(
-        #     index,
-        #     v,
-        #     (self.expanded_heads, n, n, v.shape[-1]),
-        #     requires_grad=False,
-        #     device=x.device,
-        #     dtype=x.dtype
-        # )
-        #
-        # out = einsum("h n m, h n m d -> h n d", attention, v_square)
-        # out = einsum("h n m, h n m d -> h n d", attention, v_square.to_dense())
         out = einsum("h e, h e d -> h e d", attention, v + edge_v)
-        outs = out.split(1, dim=0)
-        outs = [scatter(outs[head_idx], index=edge_index[0], dim=1, reduce="sum") for head_idx in range(self.expanded_heads)]
-        out = torch.cat(outs, dim=0)
+        out_list = out.split(1, dim=0)
+        out_list = [
+            scatter(
+                out_list[head_idx],
+                index=edge_index[0],
+                dim=1,
+                reduce="sum"
+            ) for head_idx in range(self.expanded_heads)
+        ]
+        out = torch.cat(out_list, dim=0)
         out = v_non_scatter - out  # D - A
         out = rearrange(out, "h n d -> n (h d)")
         out = self.out_linear(out)
         out = self.out_dropout(out)
 
         return out
+
+    @torch.jit.ignore
+    def no_weight_decay(self) -> List[str]:
+        return [] 
 
 
 class GraphClassAttention(nn.Module):
@@ -216,7 +178,7 @@ class GraphClassAttention(nn.Module):
 
     @torch.jit.ignore
     def no_weight_decay(self) -> List[str]:
-        return ["Q", "K", "edge_K"]  
+        return []  
 
 
 class GraphLaplacianTransformerLayer(nn.Module):
@@ -231,6 +193,7 @@ class GraphLaplacianTransformerLayer(nn.Module):
     ) -> None:
         super().__init__()
 
+        self.pre_norm_edge = nn.LayerNorm(dim)
         self.attn_block = LayerScale(
             core_block=GraphLaplacianAttention,
             dim=dim,
@@ -250,9 +213,9 @@ class GraphLaplacianTransformerLayer(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        x = self.attn_block(x, edges, edge_index)
+        x = self.attn_block(x, self.pre_norm_edge(edges), edge_index)
         x = self.ff_block(x)
-
+        
         return x
         
 
@@ -309,7 +272,6 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         ff_dropout: float = 0.,
         attention_dropout: float = 0.,
         path_dropout: float = 0.,
-        grad_clip_value: float = 1e-2,
     ) -> None:
         super().__init__()
         
@@ -329,24 +291,20 @@ class GraphLaplacianTransformerBackbone(nn.Module):
             ) for _ in range(num_token_layer)
         ])
 
-        # self.cls_token = nn.Parameter(torch.randn(1, dim), requires_grad=True)
-        # nn.init.trunc_normal_(self.cls_token, std=0.02)
-        # self.cls_layers = nn.ModuleList([
-        #     GraphClassAttentionLayer(
-        #         dim=dim,
-        #         heads=heads,
-        #         alpha=alpha,
-        #         use_bias=use_bias,
-        #         ff_expand_scale=ff_expand_scale,
-        #         ff_dropout=ff_dropout,
-        #         attention_dropout=attention_dropout,
-        #         path_dropout=path_dropout,
-        #     ) for _ in range(num_cls_layer)
-        # ])
-        
-        self.grad_clip_value = grad_clip_value
-        self.apply(self._init_weights)
-        self.apply(self._register_grad_clip)
+        self.cls_token = nn.Parameter(torch.randn(1, dim), requires_grad=True)
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
+        self.cls_layers = nn.ModuleList([
+            GraphClassAttentionLayer(
+                dim=dim,
+                heads=heads,
+                alpha=alpha,
+                use_bias=use_bias,
+                ff_expand_scale=ff_expand_scale,
+                ff_dropout=ff_dropout,
+                attention_dropout=attention_dropout,
+                path_dropout=path_dropout,
+            ) for _ in range(num_cls_layer)
+        ])
 
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor, graph_portion: torch.Tensor) -> torch.Tensor:
         b = graph_portion.shape[0]
@@ -354,21 +312,70 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         for layer in self.token_layers:
             x = layer(x, edges, edge_index)
 
-        # cls_tokens = repeat(self.cls_token, "1 d -> b d", b=b)
-        # for layer in self.cls_layers:
-        #     cls_tokens = layer(cls_tokens, x, graph_portion)
+        cls_tokens = repeat(self.cls_token, "1 d -> b d", b=b)
+        for layer in self.cls_layers:
+            cls_tokens = layer(cls_tokens, x, graph_portion)
 
-        # return cls_tokens
+        return cls_tokens
 
-        graphs = x.split(graph_portion.tolist(), dim=0)
-        outs: List[torch.Tensor] = []
-        for graph in graphs:
-            outs.append(graph.mean(dim=0, keepdim=True))
+        # Mean pooling
+        # graphs = x.split(graph_portion.tolist(), dim=0)
+        # graphs = [graph.mean(dim=0, keepdim=True) for graph in graphs]
 
-        out = torch.cat(outs, dim=0)
+        # graphs = torch.cat(graphs, dim=0)
         
-        return out
+        # return graphs
 
+    @torch.jit.ignore
+    def no_weight_decay(self) -> List[str]:
+        return ["cls_token"]  
+
+
+class GraphLaplacianTransformerWithLinearClassifier(nn.Module):
+    def __init__(self, config: GraphLaplacianTransformerConfig = None) -> None:
+        num_classes = config_pop_argument(config, "num_classes")
+        pred_act_fnc_name = config_pop_argument(config, "pred_act_fnc_name")
+        grad_clip_value = config_pop_argument(config, "grad_clip_value")
+        super().__init__()
+
+        self.atom_embedding = AtomEncoder(config.dim)
+        self.edge_embedding = BondEncoder(config.dim)
+        self.edge_proj = nn.Sequential(OrderedDict([
+            ("proj", nn.Linear(config.dim, config.dim)),
+            ("norm", nn.LayerNorm(config.dim))
+        ]))
+
+        self.backbone = GraphLaplacianTransformerBackbone(**config.__dict__)
+        self.proj_head = ProjectionHead(
+            config.dim,
+            num_classes,
+            pred_act_fnc_name,
+        )
+        
+        self.no_weight_decays = set()
+        self.grad_clip_value = grad_clip_value
+        self.apply(self._aggregate_no_weight_decays)
+        self.apply(self._init_weights)
+        self.apply(self._register_grad_clip)
+
+    def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor, graph_portion: torch.Tensor) -> torch.Tensor:
+        x = self.atom_embedding(x)
+        edges = self.edge_embedding(edges)
+        edges = self.edge_proj(edges)
+
+        x = self.backbone(x, edges, edge_index, graph_portion)
+
+        return self.proj_head(x)
+
+    @torch.jit.ignore
+    def no_weight_decay(self) -> List[str]:
+        return ["atom_embedding", "edge_embedding", "edge_proj.norm"]
+
+    @torch.jit.ignore
+    def _aggregate_no_weight_decays(self, m):
+        if hasattr(m, "no_weight_decay") and callable(getattr(m, "no_weight_decay")):
+            self.no_weight_decays |= set(m.no_weight_decay())
+    
     @torch.jit.ignore
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -382,57 +389,5 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         m.register_full_backward_hook(lambda m, grad_in, grad_out: nn.utils.clip_grad_value_(m.parameters(), self.grad_clip_value))
 
     @torch.jit.ignore
-    def no_weight_decay(self) -> List[str]:
-        return ["cls_token"]  
-
-    @torch.jit.ignore
     def num_parameters(self) -> int:
         return sum(torch.numel(params) for params in self.parameters())
-
-
-class GraphLaplacianTransformerWithLinearClassifier(nn.Module):
-    def __init__(self, config: GraphLaplacianTransformerConfig = None) -> None:
-        num_classes = config_pop_argument(config, "num_classes")
-        pred_act_fnc_name = config_pop_argument(config, "pred_act_fnc_name")
-        super().__init__()
-
-        self.atom_embedding = AtomEncoder(config.dim)
-        self.edge_embedding = BondEncoder(config.dim)
-        # self.atom_proj = nn.Sequential(
-        #     nn.Linear(config.dim, config.dim),
-        #     nn.LayerNorm(config.dim)
-        # )
-        self.edge_proj = nn.Sequential(
-            nn.Linear(config.dim, config.dim),
-            nn.LayerNorm(config.dim)
-        )
-
-        self.backbone = GraphLaplacianTransformerBackbone(**config.__dict__)
-        self.proj_head = ProjectionHead(
-            config.dim,
-            num_classes,
-            pred_act_fnc_name,
-        )
-        
-        self.no_weight_decays = set()
-        self.apply(self._aggregate_no_weight_decays)
-
-    def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor, graph_portion: torch.Tensor) -> torch.Tensor:
-        x = self.atom_embedding(x)
-        edges = self.edge_embedding(edges)
-
-        # x = self.atom_proj(x)
-        edges = self.edge_proj(edges)
-
-        x = self.backbone(x, edges, edge_index, graph_portion)
-
-        return self.proj_head(x)
-
-    @torch.jit.ignore
-    def no_weight_decay(self) -> List[str]:
-        return ["atom_embedding", "edge_embedding"]
-
-    @torch.jit.ignore
-    def _aggregate_no_weight_decays(self, m):
-        if hasattr(m, "no_weight_decay") and callable(getattr(m, "no_weight_decay")):
-            self.no_weight_decays |= set(m.no_weight_decay())

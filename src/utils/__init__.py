@@ -3,3 +3,4 @@ from .base_block import FeedForward, MLP, ProjectionHead
 from .config_base import ConfigBase
 from .dropout import PathDropout, TokenDropout, TokenWiseDropout
 from .layer_scale import LayerScale
+from .transforms import RemoveIsolatedNodes

@@ -1,11 +1,12 @@
-from torch_geometric.transforms.remove_isolated_nodes import RemoveIsolatedNodes
 from tqdm import tqdm
 import torch
 from torch_geometric.data import DataLoader
+# from torch_geometric.transforms.remove_isolated_nodes import RemoveIsolatedNodes
 from ogb.graphproppred import PygGraphPropPredDataset, Evaluator
 from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
 
 from src.model import GraphLaplacianTransformerConfig, GraphLaplacianTransformerWithLinearClassifier
+from src.utils import RemoveIsolatedNodes
 
 
 if __name__ == "__main__":
@@ -16,6 +17,9 @@ if __name__ == "__main__":
     pin_memory = False
 
     #
+    config_path = "/media/storage0/pwchi/Graph_Laplacian_Transformer/ogbg-molhiv/run_2021-07-19-22-53-14_d_12_e_256_h_8_he_4_a_1e-1/config.json"
+    glt_config = GraphLaplacianTransformerConfig.from_json(config_path)
+    print(glt_config)
     # glt_config = GraphLaplacianTransformerConfig(
     #     6,
     #     2,
@@ -31,36 +35,36 @@ if __name__ == "__main__":
     #     attention_dropout=0.1,
     #     path_dropout=0.05,
     # )
-    # glt = GraphLaplacianTransformerWithLinearClassifier(glt_config)
-    # print(glt)
+    glt = GraphLaplacianTransformerWithLinearClassifier(glt_config)
+    print(glt)
 
     #
-    atom_encoder = AtomEncoder(emb_dim = 128)
-    bond_encoder = BondEncoder(emb_dim = 128)
-    evaluator = Evaluator(name=dataset_name)
-    dataset = PygGraphPropPredDataset(name=dataset_name, transform=RemoveIsolatedNodes()) 
+    # atom_encoder = AtomEncoder(emb_dim = 128)
+    # bond_encoder = BondEncoder(emb_dim = 128)
+    # evaluator = Evaluator(name=dataset_name)
+    # dataset = PygGraphPropPredDataset(name=dataset_name, transform=RemoveIsolatedNodes()) 
 
-    split_idx = dataset.get_idx_split() 
-    train_loader = DataLoader(
-        dataset[split_idx["train"]],
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=pin_memory
-    )
+    # split_idx = dataset.get_idx_split() 
+    # train_loader = DataLoader(
+    #     dataset[split_idx["train"]],
+    #     batch_size=batch_size,
+    #     shuffle=True,
+    #     num_workers=num_workers,
+    #     pin_memory=pin_memory
+    # )
     
-    criterian = torch.nn.BCEWithLogitsLoss()
+    # criterian = torch.nn.BCEWithLogitsLoss()
 
-    torch.autograd.set_detect_anomaly(True)
-    y_true, y_pred = [], []
+    # torch.autograd.set_detect_anomaly(True)
+    # y_true, y_pred = [], []
 
-    for data in tqdm(train_loader):
+    # for data in tqdm(train_loader):
         # x, edges, edge_index, batch, y = data.x, data.edge_attr, data.edge_index.to(torch.long), data.batch, data.y.to(torch.float)
         # graph_portion = batch.bincount()
         # mask = ~torch.isnan(y)
 
-        assert data.edge_index.max() < data.num_nodes
-        assert data.edge_index.max() < data.x.size(0)
+        # assert data.edge_index.max() < data.num_nodes
+        # assert data.edge_index.max() < data.x.size(0)
 
     
         # out = glt(x, edges, edge_index, graph_portion)

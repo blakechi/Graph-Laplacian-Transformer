@@ -1,20 +1,20 @@
 nohup python main.py \
-    --log_msg split_node \
+    --log_msg d_12_e_256_h_8_he_4_a_1e-1 \
     --log_dir /media/storage0/pwchi/Graph_Laplacian_Transformer \
     --dataset_dir /media/data/pwchi/Graph_Laplacian_Transformer \
     --dataset_name ogbg-molhiv \
     --num_workers 2 \
     --cuda_device 1 \
-    --epoch 50 \
+    --epoch 150 \
     --batch_size 32 \
     --lr 0.001 \
-    --num_token_layer 8 \
+    --num_token_layer 12 \
     --num_cls_layer 2 \
-    --dim 128 \
-    --heads 4 \
-    --head_expand_scale 2 \
-    --alpha 1 \
-    --ff_dropout 0.1 \
+    --dim 256 \
+    --heads 8 \
+    --head_expand_scale 4 \
+    --alpha 0.1 \
+    --ff_dropout 0.2 \
     --attention_dropout 0.1 \
     --path_dropout 0.1 \
     --min_lr 0.000001 \

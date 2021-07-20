@@ -1,3 +1,6 @@
+import json
+
+
 class GraphLaplacianTransformerConfig(object):
     def __init__(
         self,
@@ -37,3 +40,13 @@ class GraphLaplacianTransformerConfig(object):
         self.path_dropout = path_dropout
         self.pred_act_fnc_name = pred_act_fnc_name
         self.grad_clip_value = grad_clip_value
+
+    @classmethod
+    def from_json(cls, config_path: str) -> "GraphLaplacianTransformerConfig":
+        with open(config_path, "r") as f:
+            config = json.load(f)
+        
+        return cls(**config)
+
+    def __str__(self) -> str:
+        return f"{self.__class__.__name__} = {json.dumps(self.__dict__, indent=4)}"
