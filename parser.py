@@ -48,26 +48,26 @@ def set_parser(parser):
                         metavar='N', help='')
     parser.add_argument('--path_dropout', default=0., type=float,
                         metavar='N', help='')
-    parser.add_argument('--grad_clip_value', default=1e-2, type=float,
+    parser.add_argument('--grad_clip_value', default=None, type=lambda x: None if x == "None" else x,
                         metavar='N', help='')
 
     # Optimizer - Adam
     parser.add_argument('--betas', type=float, default=[0.9, 0.999], nargs=2,
-                        metavar='N', help='betas')
+                        metavar='N N', help='betas')
     parser.add_argument('--weight_decay', type=float, default=1e-4,
-                        help='weight decay (default: 1e-4)')
+                        metavar='N', help='weight decay (default: 1e-4)')
 
     # Procedure
-    parser.add_argument('--epochs', type=int, default=100, metavar='E',
-                        help='number of epochs to train (default: 100)')
-    parser.add_argument('--lr', type=float, default=1e-3, metavar='LR',
-                        help='learning rate (default: 1e-3)')
-    parser.add_argument('--min_lr', type=float, default=1e-6, metavar='MINLR',
-                        help='Minimum learning rate (default: 1e-6)')
-    parser.add_argument('--batch_size', type=int, default=32, metavar='N',
-                        help='input batch size for training (default: 32)')
-    parser.add_argument('--logging_interval', type=int, default=32, metavar='N',
-                        help='logging per N batches')
+    parser.add_argument('--epochs', type=int, default=100,
+                        metavar='E', help='number of epochs to train (default: 100)')
+    parser.add_argument('--lr', type=float, default=1e-3,
+                        metavar='LR', help='learning rate (default: 1e-3)')
+    parser.add_argument('--min_lr', type=float, default=1e-6,
+                        metavar='MINLR', help='Minimum learning rate (default: 1e-6)')
+    parser.add_argument('--batch_size', type=int, default=32,
+                        metavar='B', help='input batch size for training (default: 32)')
+    parser.add_argument('--logging_interval', type=int, default=32,
+                        metavar='N', help='logging per N batches')
 
     # Checkpoints
     parser.add_argument('--checkpoint_name', default='', type=str,

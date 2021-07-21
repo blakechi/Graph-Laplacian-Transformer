@@ -1,4 +1,5 @@
 import json
+from typing import Optional
 
 
 class GraphLaplacianTransformerConfig(object):
@@ -19,7 +20,7 @@ class GraphLaplacianTransformerConfig(object):
         attention_dropout: float = 0.,
         path_dropout: float = 0.,
         pred_act_fnc_name: str = "ReLU",
-        grad_clip_value: float = 1e-2,
+        grad_clip_value: Optional[float] = None,
         **rest,
     ) -> None:
         super().__init__()

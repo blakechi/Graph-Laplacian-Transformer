@@ -145,10 +145,11 @@ def main():
     # Loss & Evaluator
     loss_fn = torch.nn.BCEWithLogitsLoss().to(args.device)
     evaluator = Evaluator(name=args.dataset_name)
-
+    eval_key = evaluator.eval_metric
 
     # Train Loop
     logger.info(f"Starting to train... (Epoch: {args.epochs})")
+    best_valid_score = 0.
     model.to(args.device)
     for epoch in range(args.epochs):
         train_metric = train_one_epoch(
@@ -176,15 +177,17 @@ def main():
             step=(epoch + 1)*len(train_loader) - 1
         )
         
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'train_metric': train_metric,
-            'valid_metric': valid_metric,
-            },
-            os.path.join(run_folder, f"checkpoint_{now}_{epoch}_{(epoch + 1)*len(train_loader) - 1}.pt")
-        )
+        if valid_metric[eval_key] > best_valid_score or (epoch + 1) % 10 == 0:
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'train_metric': train_metric,
+                'valid_metric': valid_metric,
+                },
+                os.path.join(run_folder, f"checkpoint_{now}_{epoch}_{(epoch + 1)*len(train_loader) - 1}.pt")
+            )
+            best_valid_score = valid_metric[eval_key]
 
     test_metric = evaluate_or_test(
         epoch,

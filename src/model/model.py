@@ -1,4 +1,4 @@
-from typing import List, OrderedDict
+from typing import List, OrderedDict, Set
 
 import torch
 from torch import nn, einsum
@@ -9,17 +9,15 @@ except:
 from torch_geometric.utils import softmax as sparse_softmax
 from torch_scatter import scatter
 from einops import rearrange, repeat
-from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
+# from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
 
+from src.dataset import AtomEncoder, BondEncoder
 from src.utils import LayerScale, MLP, ProjectionHead
 from src.utils.helpers import name_with_msg, config_pop_argument
 from .config import GraphLaplacianTransformerConfig
 
 
 class GraphLaplacianAttention(nn.Module):
-    heads: Final[int]
-    expanded_heads: Final[int]
-    scale: Final[float]
 
     def __init__(
         self,
@@ -45,11 +43,12 @@ class GraphLaplacianAttention(nn.Module):
 
         self.Q = nn.Linear(dim, dim, bias=use_bias)
         self.K = nn.Linear(dim, dim, bias=use_bias)
-        self.V = nn.Linear(dim, self.expanded_heads*head_dim, bias=use_bias)
-        self.edge_K = nn.Linear(dim, dim, bias=use_edge_bias)
-        self.edge_V = nn.Linear(dim, self.expanded_heads*head_dim, bias=use_edge_bias)
+        self.V = nn.Linear(dim, dim, bias=use_bias)
+        # self.edge_K = nn.Linear(dim, dim, bias=use_edge_bias)
+        # self.edge_V = nn.Linear(dim, self.expanded_heads*head_dim, bias=use_edge_bias)
         self.attn_expand_proj = nn.Linear(self.heads, self.expanded_heads, bias=use_attn_expand_bias)
-        self.out_linear = nn.Linear(self.expanded_heads*head_dim, dim)
+        self.attn_squeeze_proj = nn.Linear(self.expanded_heads, self.heads)
+        self.out_linear = nn.Linear(dim, dim)
 
         self.attention_dropout = nn.Dropout(attention_dropout)
         self.out_dropout = nn.Dropout(ff_dropout)
@@ -64,45 +63,48 @@ class GraphLaplacianAttention(nn.Module):
         q, k, v = self.Q(x), self.K(x), self.V(x)
         q = rearrange(q, "n (h d) -> h n d", h=self.heads)
         k = rearrange(k, "n (h d) -> h n d", h=self.heads)
-        v_non_scatter = rearrange(v, "n (h d) -> h n d", h=self.expanded_heads)
+        v_non_scatter = rearrange(v, "n (h d) -> h n d", h=self.heads)
         # all edge pairs
         q = q.index_select(dim=1, index=edge_index[0])  # q[:, edge_index[0], :] (h e d)
         k = k.index_select(dim=1, index=edge_index[1])  # k[:, edge_index[1], :] (h e d)
         v = v_non_scatter.index_select(dim=1, index=edge_index[1])  # v[:, edge_index[1], :] (h e d)
 
-        edge_k, edge_v = self.edge_K(edges), self.edge_V(edges)
-        edge_k = rearrange(edge_k, "e (h d) -> h e d", h=self.heads)
-        edge_v = rearrange(edge_v, "e (h d) -> h e d", h=self.expanded_heads)
+        # edge_k, edge_v = self.edge_K(edges), self.edge_V(edges)
+        # edge_k = rearrange(edge_k, "e (h d) -> h e d", h=self.heads)
+        # edge_v = rearrange(edge_v, "e (h d) -> h e d", h=self.expanded_heads)
 
         #
-        attention = einsum("h e d, h e d -> h e", q, (k + edge_k)*self.scale)  # element-wsie attention
+        k = k*self.scale
+        # k = (k + edge_k)*self.scale
+        attention = einsum("h e d, h e d -> h e", q, k)  # element-wsie attention
         attention = rearrange(attention, "h e -> e h")
-        attention = self.attn_expand_proj(attention)  # expand attention heads
-        attention_list = attention.split(1, dim=1)
+        attention = self.attn_expand_proj(attention)
         # softmax
-        attention_list = [
+        attention_list = attention.split(1, dim=1)
+        attention = torch.cat([
             sparse_softmax(
                 attention_list[head_idx],
                 index=edge_index[0],
+                dim=0,
                 num_nodes=n
             ) for head_idx in range(self.expanded_heads)
-        ]
-        attention = torch.cat(attention_list, dim=1)
+        ], dim=1)
+        attention = self.attn_squeeze_proj(attention)
         attention = rearrange(attention, "e h -> h e")
         attention = self.attention_dropout(attention)  
 
         #
-        out = einsum("h e, h e d -> h e d", attention, v + edge_v)
+        # v = (v + edge_v)
+        out = einsum("h e, h e d -> h e d", attention, v)
         out_list = out.split(1, dim=0)
-        out_list = [
+        out = torch.cat([
             scatter(
                 out_list[head_idx],
                 index=edge_index[0],
                 dim=1,
                 reduce="sum"
-            ) for head_idx in range(self.expanded_heads)
-        ]
-        out = torch.cat(out_list, dim=0)
+            ) for head_idx in range(self.heads)
+        ], dim=0)
         out = v_non_scatter - out  # D - A
         out = rearrange(out, "h n d -> n (h d)")
         out = self.out_linear(out)
@@ -111,13 +113,11 @@ class GraphLaplacianAttention(nn.Module):
         return out
 
     @torch.jit.ignore
-    def no_weight_decay(self) -> List[str]:
-        return [] 
+    def no_weight_decay(self) -> Set[str]:
+        return set()
 
 
 class GraphClassAttention(nn.Module):
-    heads: Final[int]
-    scale: Final[float]
 
     def __init__(
         self,
@@ -177,8 +177,8 @@ class GraphClassAttention(nn.Module):
         return outs
 
     @torch.jit.ignore
-    def no_weight_decay(self) -> List[str]:
-        return []  
+    def no_weight_decay(self) -> Set[str]:
+        return set()
 
 
 class GraphLaplacianTransformerLayer(nn.Module):
@@ -328,7 +328,7 @@ class GraphLaplacianTransformerBackbone(nn.Module):
 
     @torch.jit.ignore
     def no_weight_decay(self) -> List[str]:
-        return ["cls_token"]  
+        return { "cls_token" }
 
 
 class GraphLaplacianTransformerWithLinearClassifier(nn.Module):
@@ -354,9 +354,11 @@ class GraphLaplacianTransformerWithLinearClassifier(nn.Module):
         
         self.no_weight_decays = set()
         self.grad_clip_value = grad_clip_value
+        
         self.apply(self._aggregate_no_weight_decays)
         self.apply(self._init_weights)
-        self.apply(self._register_grad_clip)
+        if self.grad_clip_value is not None:
+            self.apply(self._register_grad_clip)
 
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor, graph_portion: torch.Tensor) -> torch.Tensor:
         x = self.atom_embedding(x)
@@ -368,8 +370,8 @@ class GraphLaplacianTransformerWithLinearClassifier(nn.Module):
         return self.proj_head(x)
 
     @torch.jit.ignore
-    def no_weight_decay(self) -> List[str]:
-        return ["atom_embedding", "edge_embedding", "edge_proj.norm"]
+    def no_weight_decay(self) -> Set[str]:
+        return {"atom_embedding", "edge_embedding", "bias"}
 
     @torch.jit.ignore
     def _aggregate_no_weight_decays(self, m):
@@ -382,7 +384,7 @@ class GraphLaplacianTransformerWithLinearClassifier(nn.Module):
             nn.init.trunc_normal_(m.weight, std=.02)
 
             if m.bias is not None:
-                nn.init.uniform_(m.bias)
+                nn.init.zeros_(m.bias)
 
     @torch.jit.ignore
     def _register_grad_clip(self, m):

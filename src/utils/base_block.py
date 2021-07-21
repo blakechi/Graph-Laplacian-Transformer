@@ -39,14 +39,16 @@ class FeedForward(nn.Module):
 
         self.ff_0 = core(dim, expand_dim)
         self.act_fnc = get_act_fnc(act_fnc_name)()
-        self.dropout = nn.Dropout(ff_dropout)
+        self.dropout_0 = nn.Dropout(ff_dropout)
         self.ff_1 = core(expand_dim, out_dim)
+        self.dropout_1 = nn.Dropout(ff_dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.ff_0(x)
         x = self.act_fnc(x)
-        x = self.dropout(x)
+        x = self.dropout_0(x)
         x = self.ff_1(x)
+        x = self.dropout_1(x)
 
         return x
 

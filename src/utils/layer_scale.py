@@ -1,4 +1,4 @@
-from typing import Optional, Union, List
+from typing import Optional, Set, Union, List
 
 import torch
 from torch import nn
@@ -23,14 +23,17 @@ class AffineTransform(nn.Module):
         return self.aff_alpha*x + self.aff_beta if self.aff_beta is not None else self.aff_alpha*x
 
     @torch.jit.ignore
-    def no_weight_decay(self) -> List[str]:
-        return ["aff_alpha", "aff_beta"] if self.aff_beta is not None else ["aff_alpha"]
+    def no_weight_decay(self) -> Set[str]:
+        return set()
+        # return ["aff_alpha", "aff_beta"] if self.aff_beta is not None else ["aff_alpha"]
 
 
-class LayerScale(AffineTransform):
+class LayerScale(nn.Module):
     r"""
     Layer Scale from CaiT (Figure 1 (d)): https://arxiv.org/abs/2103.17239
+
     Note: We replace `lambda` used in the official paper with `alpha`
+    Note: It only applies `pre_norm` on `x`. To normalize `other_inputs`, please either concatenate with `x` or add extrax normalization layers before `LayerScale`.
     """
     def __init__(
         self, 
@@ -38,22 +41,27 @@ class LayerScale(AffineTransform):
         core_block: Union[nn.Module, str], 
         pre_norm: Union[nn.Module, str] = "LayerNorm", 
         alpha: float = 1e-4, 
-        path_dropout=0., 
+        path_dropout: float = 0., 
         **kwargs  # kwargs for the `core_block`
     ) -> None:
-        super().__init__(dim, alpha=alpha, beta=None)
+        super().__init__()
 
         self.pre_norm = pre_norm(dim) if not isinstance(pre_norm, str) and issubclass(pre_norm, nn.Module) else getattr(nn, pre_norm)(dim)
+        self.aff_transform = AffineTransform(dim, alpha, beta=None)
         self.core_block = core_block(dim, **kwargs) if not isinstance(core_block, str) and issubclass(core_block, nn.Module) else getattr(nn, core_block)(dim, **kwargs)
         self.path_dropout = PathDropout(path_dropout)
-        
+
     def forward(self, x: torch.Tensor, *other_inputs) -> torch.Tensor:
-        return x + self.path_dropout(super().forward(self.core_block(self.pre_norm(x), *other_inputs)))
+        transformed_x = self.core_block(self.pre_norm(x), *other_inputs)
+
+        return x + self.path_dropout(self.aff_transform(transformed_x))
 
     @torch.jit.ignore
-    def no_weight_decay(self) -> List[str]:
-        super_no_weight_decay = []
-        if hasattr(super(), "no_weight_decay") and callable(getattr(super(), "no_weight_decay")):
-            super_no_weight_decay = super().no_weight_decay()
+    def no_weight_decay(self) -> Set[str]:
+        # super_no_weight_decay = set()
+        # if hasattr(super(), "no_weight_decay") and callable(getattr(super(), "no_weight_decay")):
+        #     super_no_weight_decay = super().no_weight_decay()
 
-        return super_no_weight_decay + ["pre_norm.weight", "pre_norm.bias"]
+        # return super_no_weight_decay + {"pre_norm.weight", "pre_norm.bias"}
+
+        return set()
