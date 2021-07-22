@@ -17,25 +17,26 @@ if __name__ == "__main__":
     pin_memory = False
 
     #
-    # config_path = "/media/storage0/pwchi/Graph_Laplacian_Transformer/ogbg-molhiv/run_2021-07-19-22-53-14_d_12_e_256_h_8_he_4_a_1e-1/config.json"
-    # glt_config = GraphLaplacianTransformerConfig.from_json(config_path)
-    glt_config = GraphLaplacianTransformerConfig(
-        6,
-        2,
-        128,
-        4,
-        1,
-        1,
-        use_bias=False,
-        use_edge_bias=False,
-        use_attn_expand_bias=False,
-        head_expand_scale=1,
-        ff_dropout=0.1,
-        attention_dropout=0.1,
-        path_dropout=0.05,
-    )
+    config_path = "/media/storage0/pwchi/Graph_Laplacian_Transformer/ogbg-molhiv/run_2021-07-21-03-05-26_d_10_e_256_h_8_he_4_a_1e-2/config.json"
+    glt_config = GraphLaplacianTransformerConfig.from_json(config_path)
+    # glt_config = GraphLaplacianTransformerConfig(
+    #     6,
+    #     2,
+    #     128,
+    #     4,
+    #     1,
+    #     1,
+    #     use_bias=False,
+    #     use_edge_bias=False,
+    #     use_attn_expand_bias=False,
+    #     head_expand_scale=1,
+    #     ff_dropout=0.1,
+    #     attention_dropout=0.1,
+    #     path_dropout=0.05,
+    # )
     glt = GraphLaplacianTransformerWithLinearClassifier(glt_config)
-    # print(glt)
+    print(glt.num_parameters())
+    assert False
     
     #
     # atom_encoder = AtomEncoder(emb_dim = 128)

@@ -9,7 +9,6 @@ except:
 from torch_geometric.utils import softmax as sparse_softmax
 from torch_scatter import scatter
 from einops import rearrange, repeat
-# from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
 
 from src.dataset import AtomEncoder, BondEncoder
 from src.utils import LayerScale, MLP, ProjectionHead
@@ -44,8 +43,8 @@ class GraphLaplacianAttention(nn.Module):
         self.Q = nn.Linear(dim, dim, bias=use_bias)
         self.K = nn.Linear(dim, dim, bias=use_bias)
         self.V = nn.Linear(dim, dim, bias=use_bias)
-        # self.edge_K = nn.Linear(dim, dim, bias=use_edge_bias)
-        # self.edge_V = nn.Linear(dim, self.expanded_heads*head_dim, bias=use_edge_bias)
+        self.edge_K = nn.Linear(dim, dim, bias=use_edge_bias)
+        self.edge_V = nn.Linear(dim, dim, bias=use_edge_bias)
         self.attn_expand_proj = nn.Linear(self.heads, self.expanded_heads, bias=use_attn_expand_bias)
         self.attn_squeeze_proj = nn.Linear(self.expanded_heads, self.heads)
         self.out_linear = nn.Linear(dim, dim)
@@ -56,8 +55,8 @@ class GraphLaplacianAttention(nn.Module):
         self.scale = head_dim ** (-0.5)
         
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        n, _ = x.shape
-        e, _ = edges.shape
+        n, _ = x.shape  # no batch size since graphs are coalessed into one
+        # e, _ = edges.shape
 
         #
         q, k, v = self.Q(x), self.K(x), self.V(x)
@@ -69,13 +68,12 @@ class GraphLaplacianAttention(nn.Module):
         k = k.index_select(dim=1, index=edge_index[1])  # k[:, edge_index[1], :] (h e d)
         v = v_non_scatter.index_select(dim=1, index=edge_index[1])  # v[:, edge_index[1], :] (h e d)
 
-        # edge_k, edge_v = self.edge_K(edges), self.edge_V(edges)
-        # edge_k = rearrange(edge_k, "e (h d) -> h e d", h=self.heads)
-        # edge_v = rearrange(edge_v, "e (h d) -> h e d", h=self.expanded_heads)
+        edge_k, edge_v = self.edge_K(edges), self.edge_V(edges)
+        edge_k = rearrange(edge_k, "e (h d) -> h e d", h=self.heads)
+        edge_v = rearrange(edge_v, "e (h d) -> h e d", h=self.heads)
 
         #
-        k = k*self.scale
-        # k = (k + edge_k)*self.scale
+        k = (k + edge_k)*self.scale
         attention = einsum("h e d, h e d -> h e", q, k)  # element-wsie attention
         attention = rearrange(attention, "h e -> e h")
         attention = self.attn_expand_proj(attention)
@@ -90,11 +88,12 @@ class GraphLaplacianAttention(nn.Module):
             ) for head_idx in range(self.expanded_heads)
         ], dim=1)
         attention = self.attn_squeeze_proj(attention)
+        attention = nn.functional.relu(attention)
         attention = rearrange(attention, "e h -> h e")
         attention = self.attention_dropout(attention)  
 
         #
-        # v = (v + edge_v)
+        v = (v + edge_v)
         out = einsum("h e, h e d -> h e d", attention, v)
         out_list = out.split(1, dim=0)
         out = torch.cat([
@@ -375,6 +374,8 @@ class GraphLaplacianTransformerWithLinearClassifier(nn.Module):
 
     @torch.jit.ignore
     def _aggregate_no_weight_decays(self, m):
+        r"""gather all `no_weight_decay` in the submodules"""
+        
         if hasattr(m, "no_weight_decay") and callable(getattr(m, "no_weight_decay")):
             self.no_weight_decays |= set(m.no_weight_decay())
     
@@ -388,6 +389,10 @@ class GraphLaplacianTransformerWithLinearClassifier(nn.Module):
 
     @torch.jit.ignore
     def _register_grad_clip(self, m):
+        r"""register gradient clipping in the backward
+
+        Warning: Won't work when scripting.
+        """
         m.register_full_backward_hook(lambda m, grad_in, grad_out: nn.utils.clip_grad_value_(m.parameters(), self.grad_clip_value))
 
     @torch.jit.ignore

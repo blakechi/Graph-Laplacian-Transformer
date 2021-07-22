@@ -1,5 +1,5 @@
 nohup python main.py \
-    --log_msg d_10_e_256_h_8_he_4_a_1e-2 \
+    --log_msg d_10_e_256_h_8_he_4_a_1e-2_add_relu \
     --log_dir /media/storage0/pwchi/Graph_Laplacian_Transformer \
     --dataset_dir /media/data/pwchi/Graph_Laplacian_Transformer \
     --dataset_name ogbg-molhiv \
@@ -24,4 +24,5 @@ nohup python main.py \
     --use_bias \
     --use_edge_bias \
     --use_attn_expand_bias \
+    > nohup_add_relu.out \
     &

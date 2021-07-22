@@ -177,30 +177,32 @@ def main():
             step=(epoch + 1)*len(train_loader) - 1
         )
         
-        if valid_metric[eval_key] > best_valid_score or (epoch + 1) % 10 == 0:
+        # Storing the model when it gets record high for valid metric, or every 10 epochs, or at the last epoch 
+        if valid_metric[eval_key] > best_valid_score or (epoch + 1) % 10 == 0 or (epoch + 1) == args.epochs:
+            test_metric = evaluate_or_test(
+                epoch,
+                test_loader,
+                model,
+                loss_fn,
+                evaluator,
+                writer,
+                logger,
+                args,
+                step=(epoch + 1)*len(train_loader) - 1,
+                mode='test'
+            )
+
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'train_metric': train_metric,
                 'valid_metric': valid_metric,
+                'test_metric': test_metric,
                 },
                 os.path.join(run_folder, f"checkpoint_{now}_{epoch}_{(epoch + 1)*len(train_loader) - 1}.pt")
             )
             best_valid_score = valid_metric[eval_key]
-
-    test_metric = evaluate_or_test(
-        epoch,
-        test_loader,
-        model,
-        loss_fn,
-        evaluator,
-        writer,
-        logger,
-        args,
-        step=(epoch + 1)*len(train_loader) - 1,
-        mode='test'
-    )
 
     writer.flush()
     writer.close()
