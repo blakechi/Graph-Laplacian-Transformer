@@ -3,10 +3,10 @@
 Reference from: https://github.com/rwightman/pytorch-image-models/blob/master/train.py
 """
 
-import argparse
 import os
-import logging
 import json
+import logging
+import argparse
 from datetime import datetime
 
 import torch
@@ -58,6 +58,7 @@ def main():
     )
     file_handler.setLevel(logging.INFO)
     logger.addHandler(file_handler)
+    logger.info(f"PID: {os.getpid()}")
     
     writer = SummaryWriter(log_dir=os.path.join(task_folder, "runs"), filename_suffix=f"{now}_{args.log_msg}")
 

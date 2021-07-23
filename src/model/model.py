@@ -43,8 +43,9 @@ class GraphLaplacianAttention(nn.Module):
         self.Q = nn.Linear(dim, dim, bias=use_bias)
         self.K = nn.Linear(dim, dim, bias=use_bias)
         self.V = nn.Linear(dim, dim, bias=use_bias)
-        self.edge_K = nn.Linear(dim, dim, bias=use_edge_bias)
-        self.edge_V = nn.Linear(dim, dim, bias=use_edge_bias)
+        self.edge_Q = nn.Linear(head_dim, dim, bias=use_edge_bias)
+        self.edge_K = nn.Linear(head_dim, dim, bias=use_edge_bias)
+        # self.edge_V = nn.Linear(dim, dim, bias=use_edge_bias)
         self.attn_expand_proj = nn.Linear(self.heads, self.expanded_heads, bias=use_attn_expand_bias)
         self.attn_squeeze_proj = nn.Linear(self.expanded_heads, self.heads)
         self.out_linear = nn.Linear(dim, dim)
@@ -68,11 +69,15 @@ class GraphLaplacianAttention(nn.Module):
         k = k.index_select(dim=1, index=edge_index[1])  # k[:, edge_index[1], :] (h e d)
         v = v_non_scatter.index_select(dim=1, index=edge_index[1])  # v[:, edge_index[1], :] (h e d)
 
-        edge_k, edge_v = self.edge_K(edges), self.edge_V(edges)
+        edge_q = self.edge_Q(edges)
+        edge_k = self.edge_K(edges)
+        # edge_q, edge_k, edge_v = self.edge_Q(edges), self.edge_K(edges), self.edge_V(edges)
+        edge_q = rearrange(edge_q, "e (h d) -> h e d", h=self.heads)
         edge_k = rearrange(edge_k, "e (h d) -> h e d", h=self.heads)
-        edge_v = rearrange(edge_v, "e (h d) -> h e d", h=self.heads)
+        # edge_v = rearrange(edge_v, "e (h d) -> h e d", h=self.heads)
 
         #
+        # q = q + edge_q
         k = (k + edge_k)*self.scale
         attention = einsum("h e d, h e d -> h e", q, k)  # element-wsie attention
         attention = rearrange(attention, "h e -> e h")
@@ -88,12 +93,11 @@ class GraphLaplacianAttention(nn.Module):
             ) for head_idx in range(self.expanded_heads)
         ], dim=1)
         attention = self.attn_squeeze_proj(attention)
-        attention = nn.functional.relu(attention)
-        attention = rearrange(attention, "e h -> h e")
         attention = self.attention_dropout(attention)  
+        attention = rearrange(attention, "e h -> h e")
 
         #
-        v = (v + edge_v)
+        # v = v + edge_v
         out = einsum("h e, h e d -> h e d", attention, v)
         out_list = out.split(1, dim=0)
         out = torch.cat([
@@ -338,10 +342,10 @@ class GraphLaplacianTransformerWithLinearClassifier(nn.Module):
         super().__init__()
 
         self.atom_embedding = AtomEncoder(config.dim)
-        self.edge_embedding = BondEncoder(config.dim)
+        self.edge_embedding = BondEncoder(config.dim // config.heads)
         self.edge_proj = nn.Sequential(OrderedDict([
-            ("proj", nn.Linear(config.dim, config.dim)),
-            ("norm", nn.LayerNorm(config.dim))
+            ("proj", nn.Linear(config.dim // config.heads, config.dim // config.heads)),
+            ("norm", nn.LayerNorm(config.dim // config.heads))
         ]))
 
         self.backbone = GraphLaplacianTransformerBackbone(**config.__dict__)
