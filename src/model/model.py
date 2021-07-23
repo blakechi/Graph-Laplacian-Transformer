@@ -1,4 +1,4 @@
-from typing import List, OrderedDict, Set
+from typing import List, OrderedDict, Set, Tuple, Dict
 
 import torch
 from torch import nn, einsum
@@ -56,7 +56,7 @@ class GraphLaplacianAttention(nn.Module):
 
         self.scale = head_dim ** (-0.5)
         
-    def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> Tuple[torch.Tensor]:
         n, _ = x.shape  # no batch size since graphs are coalessed into one
         # e, _ = edges.shape
 
@@ -189,7 +189,6 @@ class GraphLaplacianTransformerLayer(nn.Module):
     def __init__(
         self,
         dim: int,
-        edge_dim: int,
         alpha: float,
         ff_expand_scale: int = 4,
         ff_dropout: float = 0.,
@@ -198,11 +197,10 @@ class GraphLaplacianTransformerLayer(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.pre_norm_edge = nn.LayerNorm(edge_dim)
+        self.pre_norm_edge = nn.LayerNorm(kwargs["edge_dim"])
         self.attn_block = LayerScale(
             core_block=GraphLaplacianAttention,
             dim=dim,
-            edge_dim=edge_dim,
             alpha=alpha,
             ff_dropout=ff_dropout,
             path_dropout=path_dropout,
@@ -218,11 +216,11 @@ class GraphLaplacianTransformerLayer(nn.Module):
             path_dropout=path_dropout,
         )
 
-    def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        x = self.attn_block(x, self.pre_norm_edge(edges), edge_index)
-        x = self.ff_block(x)
+    def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> Tuple[torch.Tensor]:
+        x, other = self.attn_block(x, self.pre_norm_edge(edges), edge_index)
+        x, _ = self.ff_block(x)
         
-        return x
+        return x, other
         
 
 class GraphClassAttentionLayer(nn.Module):
@@ -256,8 +254,8 @@ class GraphClassAttentionLayer(nn.Module):
         )
 
     def forward(self, cls_tokens: torch.Tensor, x: torch.Tensor, graph_portion: torch.Tensor) -> torch.Tensor:
-        cls_tokens = self.attn_block(cls_tokens, x, graph_portion)
-        cls_tokens = self.ff_block(cls_tokens)
+        cls_tokens, _ = self.attn_block(cls_tokens, x, graph_portion)
+        cls_tokens, _ = self.ff_block(cls_tokens)
 
         return cls_tokens
 
@@ -268,6 +266,7 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         num_token_layer: int,
         num_cls_layer: int,
         dim: int,
+        edge_dim: int,
         heads: int,
         alpha: float,
         use_bias: bool = False,
@@ -284,6 +283,7 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         self.token_layers = nn.ModuleList([
             GraphLaplacianTransformerLayer(
                 dim=dim,
+                edge_dim=edge_dim,
                 heads=heads,
                 alpha=alpha,
                 use_bias=use_bias,
@@ -312,17 +312,18 @@ class GraphLaplacianTransformerBackbone(nn.Module):
             ) for _ in range(num_cls_layer)
         ])
 
-    def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor, graph_portion: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor, graph_portion: torch.Tensor) -> Tuple[torch.Tensor]:
         b = graph_portion.shape[0]
-
+        attentions = []
         for layer in self.token_layers:
-            x = layer(x, edges, edge_index)
+            x, attention = layer(x, edges, edge_index)
+            attentions.append(attention)
 
         cls_tokens = repeat(self.cls_token, "1 d -> b d", b=b)
         for layer in self.cls_layers:
             cls_tokens = layer(cls_tokens, x, graph_portion)
 
-        return cls_tokens
+        return cls_tokens, attentions
 
         # Mean pooling
         # graphs = x.split(graph_portion.tolist(), dim=0)
@@ -354,7 +355,7 @@ class GraphLaplacianTransformerWithLinearClassifier(nn.Module):
             ("norm", nn.LayerNorm(edge_dim))
         ]))
 
-        self.backbone = GraphLaplacianTransformerBackbone(**config.__dict__)
+        self.backbone = GraphLaplacianTransformerBackbone(**config.__dict__, edge_dim=edge_dim)
         self.proj_head = ProjectionHead(
             config.dim,
             num_classes,
@@ -374,7 +375,7 @@ class GraphLaplacianTransformerWithLinearClassifier(nn.Module):
         edges = self.edge_embedding(edges)
         edges = self.edge_proj(edges)
 
-        x = self.backbone(x, edges, edge_index, graph_portion)
+        x, attentions = self.backbone(x, edges, edge_index, graph_portion)
 
         return self.proj_head(x)
 

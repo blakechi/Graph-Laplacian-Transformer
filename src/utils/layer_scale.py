@@ -1,4 +1,4 @@
-from typing import Optional, Set, Union, List
+from typing import Optional, Set, Union, Tuple
 
 import torch
 from torch import nn
@@ -51,10 +51,16 @@ class LayerScale(nn.Module):
         self.core_block = core_block(dim, **kwargs) if not isinstance(core_block, str) and issubclass(core_block, nn.Module) else getattr(nn, core_block)(dim, **kwargs)
         self.path_dropout = PathDropout(path_dropout)
 
-    def forward(self, x: torch.Tensor, *other_inputs) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, *other_inputs) -> Tuple[torch.Tensor]:
         transformed_x = self.core_block(self.pre_norm(x), *other_inputs)
 
-        return x + self.path_dropout(self.aff_transform(transformed_x))
+        other = torch.empty(0)
+        if isinstance(transformed_x, tuple):
+            transformed_x, other = transformed_x[0], transformed_x[1:]
+        
+        x = x + self.path_dropout(self.aff_transform(transformed_x))
+
+        return (x, other)
 
     @torch.jit.ignore
     def no_weight_decay(self) -> Set[str]:
