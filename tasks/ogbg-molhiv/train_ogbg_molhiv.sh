@@ -11,6 +11,7 @@ nohup python main.py \
     --num_token_layer 10 \
     --num_cls_layer 2 \
     --dim 256 \
+    --edge_dim "None" \
     --heads 8 \
     --head_expand_scale 4 \
     --alpha 0.01 \

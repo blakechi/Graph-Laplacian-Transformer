@@ -25,7 +25,9 @@ def set_parser(parser):
     parser.add_argument('--num_cls_layer', default=2, type=int,
                         metavar='N', help='The number of class layers')
     parser.add_argument('--dim', default=128, type=int,
-                        metavar='N', help='Embedding / token dimension')
+                        metavar='N', help='Embedding / node dimension')
+    parser.add_argument('--edge_dim', default=32, type=int,
+                        metavar='N', help='Embedding / edge dimension')
     parser.add_argument('--heads', default=4, type=int,
                         metavar='N', help='Number of heads')
     parser.add_argument('--alpha', default=1e-4, type=float,
