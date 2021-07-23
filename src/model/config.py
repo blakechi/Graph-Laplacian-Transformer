@@ -11,6 +11,7 @@ class GraphLaplacianTransformerConfig(object):
         heads: int,
         alpha: float,
         num_classes: int,
+        edge_dim: Optional[int] = None,
         use_bias: bool = False,
         use_edge_bias: bool = False,
         use_attn_expand_bias: bool = False,
@@ -31,6 +32,7 @@ class GraphLaplacianTransformerConfig(object):
         self.heads = heads
         self.alpha = alpha
         self.num_classes = num_classes
+        self.edge_dim = edge_dim
         self.use_bias = use_bias
         self.use_edge_bias = use_edge_bias
         self.use_attn_expand_bias = use_attn_expand_bias

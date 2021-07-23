@@ -21,6 +21,7 @@ class GraphLaplacianAttention(nn.Module):
     def __init__(
         self,
         dim: int,
+        edge_dim: int,
         heads: int,
         head_expand_scale: float = 1.,
         attention_dropout: float = 0.,
@@ -43,8 +44,8 @@ class GraphLaplacianAttention(nn.Module):
         self.Q = nn.Linear(dim, dim, bias=use_bias)
         self.K = nn.Linear(dim, dim, bias=use_bias)
         self.V = nn.Linear(dim, dim, bias=use_bias)
-        self.edge_Q = nn.Linear(head_dim, dim, bias=use_edge_bias)
-        self.edge_K = nn.Linear(head_dim, dim, bias=use_edge_bias)
+        self.edge_Q = nn.Linear(edge_dim, dim, bias=use_edge_bias)
+        self.edge_K = nn.Linear(edge_dim, dim, bias=use_edge_bias)
         # self.edge_V = nn.Linear(dim, dim, bias=use_edge_bias)
         self.attn_expand_proj = nn.Linear(self.heads, self.expanded_heads, bias=use_attn_expand_bias)
         self.attn_squeeze_proj = nn.Linear(self.expanded_heads, self.heads)
@@ -188,6 +189,7 @@ class GraphLaplacianTransformerLayer(nn.Module):
     def __init__(
         self,
         dim: int,
+        edge_dim: int,
         alpha: float,
         ff_expand_scale: int = 4,
         ff_dropout: float = 0.,
@@ -196,10 +198,11 @@ class GraphLaplacianTransformerLayer(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.pre_norm_edge = nn.LayerNorm(dim)
+        self.pre_norm_edge = nn.LayerNorm(edge_dim)
         self.attn_block = LayerScale(
             core_block=GraphLaplacianAttention,
             dim=dim,
+            edge_dim=edge_dim,
             alpha=alpha,
             ff_dropout=ff_dropout,
             path_dropout=path_dropout,
@@ -336,16 +339,19 @@ class GraphLaplacianTransformerBackbone(nn.Module):
 
 class GraphLaplacianTransformerWithLinearClassifier(nn.Module):
     def __init__(self, config: GraphLaplacianTransformerConfig = None) -> None:
+        edge_dim = config_pop_argument(config, "edge_dim")
         num_classes = config_pop_argument(config, "num_classes")
         pred_act_fnc_name = config_pop_argument(config, "pred_act_fnc_name")
         grad_clip_value = config_pop_argument(config, "grad_clip_value")
         super().__init__()
 
+        edge_dim = edge_dim if edge_dim is not None else config.dim // config.heads
+
         self.atom_embedding = AtomEncoder(config.dim)
-        self.edge_embedding = BondEncoder(config.dim // config.heads)
+        self.edge_embedding = BondEncoder(edge_dim)
         self.edge_proj = nn.Sequential(OrderedDict([
-            ("proj", nn.Linear(config.dim // config.heads, config.dim // config.heads)),
-            ("norm", nn.LayerNorm(config.dim // config.heads))
+            ("proj", nn.Linear(edge_dim, edge_dim)),
+            ("norm", nn.LayerNorm(edge_dim))
         ]))
 
         self.backbone = GraphLaplacianTransformerBackbone(**config.__dict__)
