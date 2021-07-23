@@ -77,7 +77,7 @@ class GraphLaplacianAttention(nn.Module):
         # edge_v = rearrange(edge_v, "e (h d) -> h e d", h=self.heads)
 
         #
-        # q = q + edge_q
+        q = q + edge_q
         k = (k + edge_k)*self.scale
         attention = einsum("h e d, h e d -> h e", q, k)  # element-wsie attention
         attention = rearrange(attention, "h e -> e h")
@@ -113,7 +113,7 @@ class GraphLaplacianAttention(nn.Module):
         out = self.out_linear(out)
         out = self.out_dropout(out)
 
-        return out
+        return out, attention
 
     @torch.jit.ignore
     def no_weight_decay(self) -> Set[str]:
