@@ -56,7 +56,7 @@ class LayerScale(nn.Module):
 
         other = torch.empty(0)
         if isinstance(transformed_x, tuple):
-            transformed_x, other = transformed_x[0], transformed_x[1:]
+            transformed_x, other = transformed_x[0], transformed_x[1]
         
         x = x + self.path_dropout(self.aff_transform(transformed_x))
 

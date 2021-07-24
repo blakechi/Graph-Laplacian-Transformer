@@ -16,12 +16,13 @@ def train_one_epoch(epoch, data_loader, model, optimizer, lr_scheduler, loss_fn,
     for batch_idx, data in enumerate(data_loader):
         optimizer.zero_grad()
 
+        graph_edge_index = [graph.edge_index.to(torch.long).to(args.device) for graph in data.to_data_list()]
         required_data = data.x, data.edge_attr, data.edge_index.to(torch.long), data.batch.bincount(), data.y.to(torch.float)
         x, edges, edge_index, graph_portion, y = map(lambda ele: ele.to(args.device), required_data)
         mask = ~torch.isnan(y)
 
-        logit, attn_kldiv_loss = model(x, edges, edge_index, graph_portion)
-
+        logit, attn_kldiv_loss = model(x, edges, edge_index, graph_portion, graph_edge_index)
+        
         loss = loss_fn(logit[mask], y[mask])
         loss += args.gamma*attn_kldiv_loss
         loss.backward()
@@ -78,11 +79,12 @@ def evaluate_or_test(epoch, data_loader, model, loss_fn, evaluator, writer, logg
     model.eval()
     start_time = time.time()
     for batch_idx, data in enumerate(data_loader):
+        graph_edge_index = [graph.edge_index.to(torch.long).to(args.device) for graph in data.to_data_list()]
         required_data = data.x, data.edge_attr, data.edge_index.to(torch.long), data.batch.bincount(), data.y.to(torch.float)
         x, edges, edge_index, graph_portion, y = map(lambda ele: ele.to(args.device), required_data)
         mask = ~torch.isnan(y)
 
-        logit = model(x, edges, edge_index, graph_portion)
+        logit, _ = model(x, edges, edge_index, graph_portion, graph_edge_index)
 
         loss = loss_fn(logit[mask], y[mask])
 

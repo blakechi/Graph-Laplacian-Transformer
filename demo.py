@@ -5,7 +5,7 @@ from torch_geometric.data import DataLoader
 from ogb.graphproppred import PygGraphPropPredDataset, Evaluator
 from ogb.graphproppred.mol_encoder import AtomEncoder, BondEncoder
 
-from src.model import GraphLaplacianTransformerConfig, GraphLaplacianTransformerWithLinearClassifier
+# from src.model import GraphLaplacianTransformerConfig, GraphLaplacianTransformerWithLinearClassifier
 from src.utils import RemoveIsolatedNodes
 
 
@@ -17,8 +17,8 @@ if __name__ == "__main__":
     pin_memory = False
 
     #
-    config_path = "/media/storage0/pwchi/Graph_Laplacian_Transformer/ogbg-molhiv/run_2021-07-21-03-05-26_d_10_e_256_h_8_he_4_a_1e-2/config.json"
-    glt_config = GraphLaplacianTransformerConfig.from_json(config_path)
+    # config_path = "/media/storage0/pwchi/Graph_Laplacian_Transformer/ogbg-molhiv/run_2021-07-21-03-05-26_d_10_e_256_h_8_he_4_a_1e-2/config.json"
+    # glt_config = GraphLaplacianTransformerConfig.from_json(config_path)
     # glt_config = GraphLaplacianTransformerConfig(
     #     6,
     #     2,
@@ -34,9 +34,9 @@ if __name__ == "__main__":
     #     attention_dropout=0.1,
     #     path_dropout=0.05,
     # )
-    glt = GraphLaplacianTransformerWithLinearClassifier(glt_config)
-    print(glt.num_parameters())
-    assert False
+    # glt = GraphLaplacianTransformerWithLinearClassifier(glt_config)
+    # print(glt.num_parameters())
+    # assert False
     
     #
     # atom_encoder = AtomEncoder(emb_dim = 128)
@@ -63,14 +63,32 @@ if __name__ == "__main__":
         graph_portion = batch.bincount()
         mask = ~torch.isnan(y)
 
-        out = glt(x, edges, edge_index, graph_portion)
-        
-        loss = criterian(out, y)
-        loss.backward()
+        edge_0_x = x[edge_index[0], :]
+        edge_1_x = x[edge_index[1], :]
 
-        for name, params in glt.named_parameters():
-            if params.grad is not None:
-                print(name, params.grad.norm())
+        data_list = data.to_data_list()
+        
+        edge_0_x_ = []
+        edge_1_x_ = []
+        for graph in data_list:
+            edge_0_x_.append(graph.x[graph.edge_index[0], :])
+            edge_1_x_.append(graph.x[graph.edge_index[1], :])
+
+        edge_0_x_ = torch.cat(edge_0_x_, dim=0)
+        edge_1_x_ = torch.cat(edge_1_x_, dim=0)
+
+        print(torch.allclose(edge_0_x_, edge_0_x))
+        print(torch.allclose(edge_1_x_, edge_1_x))
+
+
+        # out = glt(x, edges, edge_index, graph_portion)
+        
+        # loss = criterian(out, y)
+        # loss.backward()
+
+        # for name, params in glt.named_parameters():
+        #     if params.grad is not None:
+        #         print(name, params.grad.norm())
 
         assert False
     

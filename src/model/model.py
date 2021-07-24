@@ -83,6 +83,7 @@ class GraphEdgeFusionAttention(nn.Module):
         attention = einsum("h e d, h e d -> h e", q, k)  # element-wsie attention
         attention = rearrange(attention, "h e -> e h")
         attention = self.attn_expand_proj(attention)
+        attention = self.attn_squeeze_proj(attention)
         # softmax
         attention_list = attention.split(1, dim=1)
         attention = torch.cat([
@@ -91,9 +92,8 @@ class GraphEdgeFusionAttention(nn.Module):
                 index=edge_index[0],
                 dim=0,
                 num_nodes=n
-            ) for head_idx in range(self.expanded_heads)
+            ) for head_idx in range(self.heads)
         ], dim=1)
-        attention = self.attn_squeeze_proj(attention)
         attention = self.attention_dropout(attention)  
         attention = rearrange(attention, "e h -> h e")
 
@@ -179,8 +179,8 @@ class GraphLaplacianAttention(nn.Module):
 
             attention = einsum("h n d, h m d -> h n m", q_graph, k_graph)
             attention = self.attn_expand_proj(attention.unsqueeze(dim=0))  # (h, n, m) -> (1, h, n, m)
-            attention = attention.softmax(dim=-1)
             attention = self.attn_squeeze_proj(attention).squeeze(dim=0)  # (1, h, n, m) -> (h, n, m)
+            attention = attention.softmax(dim=-1)
             attention = self.attention_dropout(attention)
 
             out = einsum("h n m, h m d -> h n d", attention, v_graph)
@@ -191,8 +191,8 @@ class GraphLaplacianAttention(nn.Module):
             edge_attention = attention[:, graph_edge_index[idx][0], graph_edge_index[idx][1]]
             attentions.append(edge_attention)
 
-        attentions = torch.stack(attentions, dim=0)
-        outs = torch.stack(outs, dim=0)
+        attentions = torch.cat(attentions, dim=1)
+        outs = torch.cat(outs, dim=0)
         outs = self.out_linear(outs)
         outs = self.out_dropout(outs)
 
@@ -522,13 +522,12 @@ class GraphLaplacianTransformerWithLinearClassifier(nn.Module):
 
     def get_attention_kldiv_loss(self, attentions: List[torch.Tensor], edge_index: torch.Tensor) -> torch.Tensor:
         num_heads = attentions[0].shape[0]
-        
         kldiv_losses = []
         for idx in range(1, len(attentions)):
             log_p = torch.log(attentions[idx - 1] + 1e-12)
             log_q = torch.log(attentions[idx] + 1e-12)
             kldiv_loss = attentions[idx - 1]*(log_p - log_q)
-            kldiv_loss_list = kldiv_loss.split(1, dim=0)
+            kldiv_loss_list = kldiv_loss.split(1, dim=0)  # split heads
             kldiv_loss = torch.cat([
                 scatter(
                     kldiv_loss_list[head_idx],
@@ -537,6 +536,7 @@ class GraphLaplacianTransformerWithLinearClassifier(nn.Module):
                     reduce="sum"
                 ) for head_idx in range(num_heads)
             ], dim=0)
+            
             kldiv_losses.append(kldiv_loss.mean())
 
         return torch.stack(kldiv_losses, dim=0).mean()
