@@ -68,6 +68,8 @@ def set_parser(parser):
                         metavar='MINLR', help='Minimum learning rate (default: 1e-6)')
     parser.add_argument('--batch_size', type=int, default=32,
                         metavar='B', help='input batch size for training (default: 32)')
+    parser.add_argument('--gamma', type=float, default=1e-1,
+                        metavar='N', help='The scaling ratio for attention KLDiv. Loss')
     parser.add_argument('--logging_interval', type=int, default=32,
                         metavar='N', help='logging per N batches')
 

@@ -20,9 +20,10 @@ def train_one_epoch(epoch, data_loader, model, optimizer, lr_scheduler, loss_fn,
         x, edges, edge_index, graph_portion, y = map(lambda ele: ele.to(args.device), required_data)
         mask = ~torch.isnan(y)
 
-        logit = model(x, edges, edge_index, graph_portion)
+        logit, attn_kldiv_loss = model(x, edges, edge_index, graph_portion)
 
         loss = loss_fn(logit[mask], y[mask])
+        loss += args.gamma*attn_kldiv_loss
         loss.backward()
         optimizer.step()
 
