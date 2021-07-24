@@ -83,6 +83,7 @@ class GraphEdgeFusionAttention(nn.Module):
         attention = einsum("h e d, h e d -> h e", q, k)  # element-wsie attention
         attention = rearrange(attention, "h e -> e h")
         attention = self.attn_expand_proj(attention)
+        attention = nn.functional.gelu(attention)
         attention = self.attn_squeeze_proj(attention)
         # softmax
         attention_list = attention.split(1, dim=1)
@@ -179,6 +180,7 @@ class GraphLaplacianAttention(nn.Module):
 
             attention = einsum("h n d, h m d -> h n m", q_graph, k_graph)
             attention = self.attn_expand_proj(attention.unsqueeze(dim=0))  # (h, n, m) -> (1, h, n, m)
+            attention = nn.functional.gelu(attention)
             attention = self.attn_squeeze_proj(attention).squeeze(dim=0)  # (1, h, n, m) -> (h, n, m)
             attention = attention.softmax(dim=-1)
             attention = self.attention_dropout(attention)
@@ -271,36 +273,22 @@ class GraphEdgeFusionLayer(nn.Module):
     def __init__(
         self,
         dim: int,
-        alpha: float,
-        ff_expand_scale: int = 4,
-        ff_dropout: float = 0.,
-        path_dropout: float = 0.,
         **kwargs
     ) -> None:
         super().__init__()
 
-        self.attn_block = LayerScale(
-            core_block=GraphEdgeFusionAttention,
+        self.node_norm = nn.LayerNorm(dim)
+        self.edge_norm = nn.LayerNorm(dim)
+        self.attn_block = GraphEdgeFusionAttention(
             dim=dim,
-            alpha=alpha,
-            ff_dropout=ff_dropout,
-            path_dropout=path_dropout,
             **kwargs
         )
 
-        self.ff_block = LayerScale(
-            core_block=MLP,
-            dim=dim,
-            alpha=alpha,
-            expand_dim=dim*ff_expand_scale,
-            ff_dropout=ff_dropout,
-            path_dropout=path_dropout,
-        )
-
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> Tuple[torch.Tensor]:
+        x = self.node_norm(x)
+        edges = self.node_norm(edges)
         x, attention = self.attn_block(x, edges, edge_index)
-        x, _ = self.ff_block(x)
-        
+
         return x, attention
 
 
@@ -402,15 +390,15 @@ class GraphLaplacianTransformerBackbone(nn.Module):
             dim=dim,
             edge_dim=edge_dim,
             heads=heads,
-            alpha=alpha,
+            # alpha=alpha,
             use_bias=use_bias,
             use_edge_bias=use_edge_bias,
             use_attn_expand_bias=use_attn_expand_bias,
             head_expand_scale=head_expand_scale,
-            ff_expand_scale=ff_expand_scale,
+            # ff_expand_scale=ff_expand_scale,
             ff_dropout=ff_dropout,
             attention_dropout=attention_dropout,
-            path_dropout=path_dropout,
+            # path_dropout=path_dropout,
         )
 
         self.token_layers = nn.ModuleList([
