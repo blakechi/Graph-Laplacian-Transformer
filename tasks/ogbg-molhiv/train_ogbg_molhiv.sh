@@ -1,5 +1,5 @@
 nohup python main.py \
-    --log_msg d_10_e_256_h_8_he_4_a_1e-2_edge_qk_32_3 \
+    --log_msg d_10_e_256_h_8_he_4_a_1e-2_edge_kv_64_1 \
     --log_dir /media/storage0/pwchi/Graph_Laplacian_Transformer \
     --dataset_dir /media/data/pwchi/Graph_Laplacian_Transformer \
     --dataset_name ogbg-molhiv \
@@ -11,7 +11,7 @@ nohup python main.py \
     --num_token_layer 10 \
     --num_cls_layer 2 \
     --dim 256 \
-    --edge_dim "None" \
+    --edge_dim 64 \
     --heads 8 \
     --head_expand_scale 4 \
     --alpha 0.01 \
@@ -25,5 +25,5 @@ nohup python main.py \
     --use_bias \
     --use_edge_bias \
     --use_attn_expand_bias \
-    > nohup_edge_qk_32_3.out \
+    > nohup_edge_kv_64_1.out \
     &
