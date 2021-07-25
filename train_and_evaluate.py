@@ -21,10 +21,11 @@ def train_one_epoch(epoch, data_loader, model, optimizer, lr_scheduler, loss_fn,
         x, edges, edge_index, graph_portion, y = map(lambda ele: ele.to(args.device), required_data)
         mask = ~torch.isnan(y)
 
-        logit, attn_kldiv_loss = model(x, edges, edge_index, graph_portion, graph_edge_index)
+        logit = model(x, edges, edge_index, graph_portion, graph_edge_index)
+        # logit, attn_kldiv_loss = model(x, edges, edge_index, graph_portion, graph_edge_index)
         
         loss = loss_fn(logit[mask], y[mask])
-        loss += args.gamma*attn_kldiv_loss
+        # loss += args.gamma*attn_kldiv_loss
         loss.backward()
         optimizer.step()
 
@@ -84,7 +85,8 @@ def evaluate_or_test(epoch, data_loader, model, loss_fn, evaluator, writer, logg
         x, edges, edge_index, graph_portion, y = map(lambda ele: ele.to(args.device), required_data)
         mask = ~torch.isnan(y)
 
-        logit, _ = model(x, edges, edge_index, graph_portion, graph_edge_index)
+        logit = model(x, edges, edge_index, graph_portion, graph_edge_index)
+        # logit, _ = model(x, edges, edge_index, graph_portion, graph_edge_index)
 
         loss = loss_fn(logit[mask], y[mask])
 

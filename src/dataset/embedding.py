@@ -13,7 +13,7 @@ class AtomEncoder(torch.nn.Module):
 
         for _, dim in enumerate(full_atom_feature_dims):
             emb = torch.nn.Embedding(dim, emb_dim)
-            torch.nn.init.trunc_normal_(emb.weight.data, std=.02)
+            torch.nn.init.xavier_normal_(emb.weight.data)
             self.atom_embedding_list.append(emb)
 
     def forward(self, x):

@@ -40,7 +40,7 @@ def main():
     args = parser.parse_args()
     args.device = "cpu"
     if torch.cuda.is_available():
-        torch.cuda.set_device(args.cuda_device)
+        torch.cuda.set_device(f"cuda:{args.cuda_device}")
         args.device = f"cuda:{args.cuda_device}"
         
     now = datetime.now()
@@ -152,6 +152,10 @@ def main():
     logger.info(f"Starting to train... (Epoch: {args.epochs})")
     best_valid_score = 0.
     model.to(args.device)
+
+    for name, params in model.named_parameters():
+        if torch.any(params.isnan()):
+            print(name, params)
     for epoch in range(args.epochs):
         train_metric = train_one_epoch(
             epoch,

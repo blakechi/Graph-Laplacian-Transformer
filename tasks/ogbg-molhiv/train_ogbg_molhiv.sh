@@ -1,14 +1,14 @@
 nohup python main.py \
-    --log_msg edge_fuse_1 \
+    --log_msg graph_fourier_transform \
     --log_dir /media/storage0/pwchi/Graph_Laplacian_Transformer \
     --dataset_dir /media/data/pwchi/Graph_Laplacian_Transformer \
     --dataset_name ogbg-molhiv \
     --num_workers 2 \
-    --cuda_device 1 \
+    --cuda_device 2 \
     --epoch 150 \
     --batch_size 32 \
     --lr 0.001 \
-    --num_token_layer 10 \
+    --num_token_layer 6 \
     --num_cls_layer 2 \
     --dim 256 \
     --edge_dim 256 \
@@ -25,5 +25,5 @@ nohup python main.py \
     --use_bias \
     --use_edge_bias \
     --use_attn_expand_bias \
-    > nohup_edge_fuse_1.out \
+    > nohup_graph_fourier_transform.out \
     &
