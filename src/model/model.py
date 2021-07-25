@@ -10,6 +10,7 @@ from torch_geometric.utils import softmax as sparse_softmax
 from torch_geometric.utils import to_dense_adj
 from torch_scatter import scatter
 from einops import rearrange, repeat
+from einops.layers.torch import Rearrange
 
 from src.dataset import AtomEncoder, BondEncoder
 from src.utils import LayerScale, MLP, ProjectionHead
@@ -18,7 +19,6 @@ from .config import GraphLaplacianTransformerConfig
 
 
 class GraphEdgeFusionAttention(nn.Module):
-
     def __init__(
         self,
         dim: int,
@@ -123,7 +123,6 @@ class GraphEdgeFusionAttention(nn.Module):
 
 
 class GraphLaplacianAttention(nn.Module):
-
     def __init__(
         self,
         dim: int,
@@ -206,82 +205,48 @@ class GraphLaplacianAttention(nn.Module):
         return set()
 
 
-class GraphLaplacianBlock(nn.Module):
-
-    def __init__(
-        self,
-        dim: int,
-        heads: int,
-        head_expand_scale: float = 1.,
-        attention_dropout: float = 0.,
-        ff_dropout: float = 0.,
-        use_bias: bool = False,
-        dtype = torch.float32,
-    ) -> None:
+class GraphFourierBlock(nn.Module):
+    def __init__(self, to_freq: bool) -> None:
         super().__init__()
-
-        head_dim = dim // heads
-
-        assert (
-            head_dim * heads == dim
-        ), name_with_msg(self, f"`head_dim` ({head_dim}) * `heads` ({heads}) != `dim` ({dim})")
-
-        self.heads = heads
-        self.expanded_heads = int(head_expand_scale*self.heads)  # ceiling
-
-        self.Q = nn.Linear(dim, dim, bias=use_bias)
-        self.K = nn.Linear(dim, dim, bias=use_bias)
-        self.V = nn.Linear(dim, dim, bias=use_bias)
-        # self.attn_expand_proj = nn.Conv2d(self.heads, self.expanded_heads, kernel_size=1, bias=use_attn_expand_bias)
-        # self.attn_squeeze_proj = nn.Conv2d(self.expanded_heads, self.heads, kernel_size=1, bias=False)
-        self.out_linear = nn.Linear(dim, dim)
-
-        self.attention_dropout = nn.Dropout(attention_dropout)
-        self.out_dropout = nn.Dropout(ff_dropout)
-
-        self.scale = head_dim ** (-0.5)
-        self.mask_value = -torch.finfo(dtype).max
         
-    def forward(self, x: torch.Tensor, graph_portion: List[int], graph_edge_index: List[torch.Tensor], eig_vector_list: List[torch.Tensor]) -> Tuple[torch.Tensor]:
+        self.transform = Rearrange("n m -> m n") if to_freq else nn.Identity()
+
+    def forward(self, x: torch.Tensor, graph_portion: List[int], eig_vector_list: List[torch.Tensor]) -> Tuple[torch.Tensor]:
         b = len(graph_portion)
         n, _ = x.shape  # no batch size since graphs are coalessed into one
-    
-        q, k, v = self.Q(x), self.K(x), self.V(x)
-        q = rearrange(q, "p (h d) -> h p d", h=self.heads)
-        k = rearrange(k, "p (h d) -> h p d", h=self.heads)*self.scale
-        v = rearrange(v, "p (h d) -> h p d", h=self.heads)
-        
-        q_list = q.split(graph_portion, dim=1)
-        k_list = k.split(graph_portion, dim=1)
-        v_list = v.split(graph_portion, dim=1)
-        
+
+        x_list = x.split(graph_portion, dim=0)
         outs: List[torch.Tensor] = []
-        attentions: List[torch.Tensor] = []
         for idx in range(b):
-            q_graph = q_list[idx]
-            k_graph = k_list[idx]
-            v_graph = v_list[idx]
-
-            attention = einsum("h n d, h m d -> h n m", q_graph, k_graph)
-            attention = attention.softmax(dim=-1)
-            attention = self.attention_dropout(attention)
-            attention = eig_vector_list[idx]*attention
-            # _, attention = torch.linalg.eig(attention)
-
-            out = einsum("h n m, h m d -> h n d", attention, v_graph)
-            out = rearrange(out, "h n d -> n (h d)")
+            out = einsum("n m, m d -> n d", self.transform(eig_vector_list[idx]), x_list[idx])
             outs.append(out)
 
-            edge_attention = attention[:, graph_edge_index[idx][0], graph_edge_index[idx][1]]
-            attentions.append(edge_attention)
-
-        attentions = torch.cat(attentions, dim=1)
         outs = torch.cat(outs, dim=0)
-        outs = self.out_linear(outs)
-        outs = self.out_dropout(outs)
 
-        return outs, attentions
-            
+        return outs
+
+    @torch.jit.ignore
+    def no_weight_decay(self) -> Set[str]:
+        return set()
+
+        
+class DenseFourierBlock(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+
+    def forward(self, x: torch.Tensor, graph_portion: List[int]) -> Tuple[torch.Tensor]:
+        b = len(graph_portion)
+        n, _ = x.shape  # no batch size since graphs are coalessed into one
+
+        x_list = x.split(graph_portion, dim=0)
+        outs: List[torch.Tensor] = []
+        for idx in range(b):
+            out = torch.fft.fft2(x_list[idx]).real
+            outs.append(out)
+
+        outs = torch.cat(outs, dim=0)
+
+        return outs
 
     @torch.jit.ignore
     def no_weight_decay(self) -> Set[str]:
@@ -425,12 +390,10 @@ class GraphFourierLayer(nn.Module):
         super().__init__()
 
         self.attn_block = LayerScale(
-            core_block=GraphLaplacianBlock,
+            core_block=GraphFourierBlock,
             dim=dim,
             alpha=alpha,
-            ff_dropout=ff_dropout,
-            path_dropout=path_dropout,
-            **kwargs
+            path_dropout=path_dropout
         )
 
         self.ff_block = LayerScale(
@@ -443,10 +406,44 @@ class GraphFourierLayer(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, *args) -> Tuple[torch.Tensor]:
-        x, attention = self.attn_block(x, *args)
+        x, _ = self.attn_block(x, *args)
         x, _ = self.ff_block(x)
         
-        return x, attention
+        return x, _
+
+
+class DenseFourierLayer(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        alpha: float,
+        ff_expand_scale: int = 4,
+        ff_dropout: float = 0.,
+        path_dropout: float = 0.,
+    ) -> None:
+        super().__init__()
+
+        self.attn_block = LayerScale(
+            core_block=DenseFourierBlock,
+            dim=dim,
+            alpha=alpha,
+            path_dropout=path_dropout
+        )
+
+        self.ff_block = LayerScale(
+            core_block=MLP,
+            dim=dim,
+            alpha=alpha,
+            expand_dim=dim*ff_expand_scale,
+            ff_dropout=ff_dropout,
+            path_dropout=path_dropout,
+        )
+
+    def forward(self, x: torch.Tensor, *args) -> Tuple[torch.Tensor]:
+        x, _ = self.attn_block(x, *args)
+        x, _ = self.ff_block(x)
+        
+        return x, _
         
 
 class GraphClassPoolLayer(nn.Module):
@@ -524,14 +521,19 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         self.token_layers = nn.ModuleList([
             GraphFourierLayer(
                 dim=dim,
-                heads=heads,
+                to_freq=True if idx % 2 == 0 else False,
                 alpha=alpha,
-                use_bias=use_bias,
-                ff_expand_scale=ff_expand_scale,
                 ff_dropout=ff_dropout,
-                attention_dropout=attention_dropout,
                 path_dropout=path_dropout,
-            ) for _ in range(num_token_layer)
+            ) for idx in range(num_token_layer)
+        ])
+
+        self.dense_layers = nn.ModuleList([
+            DenseFourierLayer(
+                dim=dim,
+                ff_dropout=ff_dropout,
+                path_dropout=path_dropout
+            ) for _ in range(2)
         ])
         # self.token_layers = nn.ModuleList([
         #     GraphLaplacianLayer(
@@ -569,15 +571,19 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         attentions = []
         
         adj_list = [to_dense_adj(edge_index) for edge_index in graph_edge_index]
-        eig_vector_list = [torch.linalg.eigh(torch.diag_embed(adj.sum(dim=-1)) - adj)[1] for adj in adj_list]
+        eig_vector_list = [torch.linalg.eigh(torch.diag_embed(adj.sum(dim=-1)) - adj)[1].squeeze() for adj in adj_list]
         #
         x, attention = self.edge_fusion(x, edges, edge_index)
         attentions.append(attention)
 
         #
         for idx, layer in enumerate(self.token_layers):
-            x, attention = layer(x, graph_portion, graph_edge_index, eig_vector_list)
+            x, attention = layer(x, graph_portion, eig_vector_list)
             attentions.append(attention)
+
+        #
+        for idx, layer in enumerate(self.dense_layers):
+            x, _ = layer(x, graph_portion)
 
         #
         cls_tokens = repeat(self.cls_token, "1 d -> b d", b=b)
