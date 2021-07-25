@@ -24,6 +24,7 @@ class GraphLaplacianAttention(nn.Module):
         edge_dim: int,
         heads: int,
         head_expand_scale: float = 1.,
+        temperature: float = 1e-2,
         attention_dropout: float = 0.,
         ff_dropout: float = 0.,
         use_bias: bool = False,
@@ -41,6 +42,7 @@ class GraphLaplacianAttention(nn.Module):
         self.heads = heads
         self.expanded_heads = int(head_expand_scale*self.heads)  # ceiling
 
+        self.temperature = nn.Parameter(temperature*torch.ones(1), requires_grad=True)
         self.Q = nn.Linear(dim, dim, bias=use_bias)
         self.K = nn.Linear(dim, dim, bias=use_bias)
         self.V = nn.Linear(dim, dim, bias=use_bias)
@@ -81,7 +83,7 @@ class GraphLaplacianAttention(nn.Module):
         # q = q + edge_q
         k = (k + edge_k)*self.scale
         attention = einsum("h e d, h e d -> h e", q, k)  # element-wsie attention
-        attention = rearrange(attention, "h e -> e h")
+        attention = rearrange(attention, "h e -> e h") / self.temperature
         attention = self.attn_expand_proj(attention)
         # softmax
         attention_list = attention.split(1, dim=1)
@@ -352,6 +354,7 @@ class GraphLaplacianTransformerWithLinearClassifier(nn.Module):
         self.edge_embedding = BondEncoder(edge_dim)
         self.edge_proj = nn.Sequential(OrderedDict([
             ("proj", nn.Linear(edge_dim, edge_dim)),
+            ("act_fnc", nn.GELU()),
             ("norm", nn.LayerNorm(edge_dim))
         ]))
 
