@@ -46,14 +46,14 @@ def main():
     now = datetime.now()
     now = now.strftime("%Y-%m-%d-%H-%M-%S")
     task_folder = os.path.join(args.log_dir, args.dataset_name)
-    run_folder = os.path.join(task_folder, f"run_{now}_{args.log_msg}")
+    new_run_folder = os.path.join(task_folder, f"run_{now}_{args.log_msg}")
     if not os.path.exists(task_folder):
         os.mkdir(task_folder)
-    if not os.path.exists(run_folder):
-        os.mkdir(run_folder)
+    if not os.path.exists(new_run_folder):
+        os.mkdir(new_run_folder)
 
     file_handler = logging.FileHandler(
-        os.path.join(run_folder, "logging.log"),
+        os.path.join(new_run_folder, "logging.log"),
         mode='w'
     )
     file_handler.setLevel(logging.INFO)
@@ -62,7 +62,7 @@ def main():
     
     writer = SummaryWriter(log_dir=os.path.join(task_folder, "runs"), filename_suffix=f"{now}_{args.log_msg}")
 
-    with open(os.path.join(run_folder, "config.json"), 'w') as json_file:
+    with open(os.path.join(new_run_folder, "config.json"), 'w') as json_file:
         json.dump(args.__dict__, json_file, indent=4)
 
 
@@ -99,10 +99,21 @@ def main():
 
 
     # Model
-    logger.info(f"Initializing the model...")
-    config = GraphLaplacianTransformerConfig(**args.__dict__)
-    model = GraphLaplacianTransformerWithLinearClassifier(config)
+    logger.info("Initializing the model...")
+    old_run_folder = os.path.join(args.log_dir, args.dataset_name, args.run_folder)
+    if args.run_folder and args.config_name:
+        logger.info("Configuring the model by the given configuration file...")
+        config_path = os.path.join(old_run_folder, args.config_name)
+        config = GraphLaplacianTransformerConfig.from_json(config_path)
+    else:
+        config = GraphLaplacianTransformerConfig(**args.__dict__)
 
+    model = GraphLaplacianTransformerWithLinearClassifier(config)
+    if args.run_folder and args.checkpoint_name:
+        logger.info("Loading parameters from the given checkpoint...")
+        checkpoint_path = os.path.join(old_run_folder, args.checkpoint_name)
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint["model_state_dict"])
 
     # Optimizer
     no_weight_decays = model.no_weight_decays
@@ -149,13 +160,18 @@ def main():
     eval_key = evaluator.eval_metric
 
     # Train Loop
-    logger.info(f"Starting to train... (Epoch: {args.epochs})")
+    logger.info(f"Starting to train... (Total Epoch: {args.epochs})")
     best_valid_score = 0.
     model.to(args.device)
 
+    nan_list = []
     for name, params in model.named_parameters():
         if torch.any(params.isnan()):
-            print(name, params)
+            nan_list.append((name, params))
+    
+    assert len(nan_list) == 0, f"Find nan in the model:\n{nan_list}"
+
+    
     for epoch in range(args.epochs):
         train_metric = train_one_epoch(
             epoch,

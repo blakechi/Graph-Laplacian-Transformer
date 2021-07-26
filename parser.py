@@ -73,10 +73,12 @@ def set_parser(parser):
     parser.add_argument('--logging_interval', type=int, default=32,
                         metavar='N', help='logging per N batches')
 
-    # Checkpoints
+    # Checkpoint & Config
+    parser.add_argument('--run_folder', default='', type=str,
+                        metavar='RUNFOLDER', help='The folder contains checkpoints and the config')
     parser.add_argument('--checkpoint_name', default='', type=str,
                         metavar='CHECKPOINTNAME', help='Checkpoint file name')
-    parser.add_argument('--checkpoint_folder', default='', type=str,
-                        metavar='CHECKPOINTFOLDER', help='The folder contains the checkpoint')
+    parser.add_argument('--config_name', default='', type=str,
+                        metavar='CONFIGNAME', help='Configuration file name')
 
     return parser

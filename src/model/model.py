@@ -206,7 +206,7 @@ class GraphLaplacianAttention(nn.Module):
 
 
 class GraphFourierBlock(nn.Module):
-    def __init__(self, to_freq: bool) -> None:
+    def __init__(self, to_freq: bool, **kwargs) -> None:
         super().__init__()
         
         self.transform = Rearrange("n m -> m n") if to_freq else nn.Identity()
@@ -231,7 +231,7 @@ class GraphFourierBlock(nn.Module):
 
         
 class DenseFourierBlock(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__()
 
     def forward(self, x: torch.Tensor, graph_portion: List[int]) -> Tuple[torch.Tensor]:
@@ -531,6 +531,7 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         self.dense_layers = nn.ModuleList([
             DenseFourierLayer(
                 dim=dim,
+                alpha=alpha,
                 ff_dropout=ff_dropout,
                 path_dropout=path_dropout
             ) for _ in range(2)

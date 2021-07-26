@@ -1,14 +1,14 @@
 nohup python main.py \
-    --log_msg graph_fourier_only \
+    --log_msg graph_dense_fourier_retrain \
     --log_dir /media/storage0/pwchi/Graph_Laplacian_Transformer \
     --dataset_dir /media/data/pwchi/Graph_Laplacian_Transformer \
     --dataset_name ogbg-molhiv \
     --num_workers 2 \
-    --cuda_device 2 \
+    --cuda_device 1 \
     --epoch 150 \
     --batch_size 32 \
-    --lr 0.001 \
-    --num_token_layer 8 \
+    --lr 0.0001 \
+    --num_token_layer 6 \
     --num_cls_layer 2 \
     --dim 256 \
     --edge_dim 256 \
@@ -25,5 +25,8 @@ nohup python main.py \
     --use_bias \
     --use_edge_bias \
     --use_attn_expand_bias \
-    > nohup_graph_fourier_only.out \
+    --run_folder run_2021-07-25-17-07-05_graph_dense_fourier \
+    --checkpoint_name checkpoint_2021-07-25-17-07-05_149_154349.pt \
+    --config_name config.json \
+    > nohup_graph_dense_fourier_retrain.out \
     &
