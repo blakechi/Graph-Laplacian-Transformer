@@ -221,7 +221,7 @@ def main():
                 'valid_metric': valid_metric,
                 'test_metric': test_metric,
                 },
-                os.path.join(run_folder, f"checkpoint_{now}_{epoch}_{(epoch + 1)*len(train_loader) - 1}.pt")
+                os.path.join(new_run_folder, f"checkpoint_{now}_{epoch}_{(epoch + 1)*len(train_loader) - 1}.pt")
             )
             best_valid_score = valid_metric[eval_key]
 

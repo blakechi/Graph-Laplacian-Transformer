@@ -180,9 +180,8 @@ class GraphLaplacianAttention(nn.Module):
 
             attention = einsum("h n d, h m d -> h n m", q_graph, k_graph)
             attention = self.attn_expand_proj(attention.unsqueeze(dim=0))  # (h, n, m) -> (1, h, n, m)
-            attention = nn.functional.gelu(attention)
-            attention = self.attn_squeeze_proj(attention).squeeze(dim=0)  # (1, h, n, m) -> (h, n, m)
             attention = attention.softmax(dim=-1)
+            attention = self.attn_squeeze_proj(attention).squeeze(dim=0)  # (1, h, n, m) -> (h, n, m)
             attention = self.attention_dropout(attention)
 
             out = einsum("h n m, h m d -> h n d", attention, v_graph)

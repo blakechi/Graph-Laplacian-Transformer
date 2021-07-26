@@ -1,5 +1,5 @@
 nohup python main.py \
-    --log_msg graph_dense_fourier_retrain \
+    --log_msg graph_dense_fourier_1_retrain \
     --log_dir /media/storage0/pwchi/Graph_Laplacian_Transformer \
     --dataset_dir /media/data/pwchi/Graph_Laplacian_Transformer \
     --dataset_name ogbg-molhiv \
@@ -25,8 +25,8 @@ nohup python main.py \
     --use_bias \
     --use_edge_bias \
     --use_attn_expand_bias \
-    --run_folder run_2021-07-25-17-07-05_graph_dense_fourier \
-    --checkpoint_name checkpoint_2021-07-25-17-07-05_149_154349.pt \
+    --run_folder run_2021-07-25-17-10-45_graph_dense_fourier_1 \
+    --checkpoint_name checkpoint_2021-07-25-17-10-45_149_154349.pt \
     --config_name config.json \
-    > nohup_graph_dense_fourier_retrain.out \
+    > nohup_graph_dense_fourier_1_retrain.out \
     &
