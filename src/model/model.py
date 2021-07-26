@@ -2,6 +2,7 @@ from typing import List, OrderedDict, Set, Tuple, Dict
 
 import torch
 from torch import nn, einsum
+from torch.nn.modules.container import ModuleList
 try:
     from typing_extensions import Final
 except:
@@ -518,38 +519,22 @@ class GraphLaplacianTransformerBackbone(nn.Module):
             # path_dropout=path_dropout,
         )
 
-        self.token_layers = nn.ModuleList([
-            GraphFourierLayer(
-                dim=dim,
-                to_freq=True if idx % 2 == 0 else False,
-                alpha=alpha,
-                ff_dropout=ff_dropout,
-                path_dropout=path_dropout,
-            ) for idx in range(num_token_layer)
+        self.stages = nn.ModuleList([
+            nn.ModuleList([
+                GraphFourierLayer(
+                    dim=dim,
+                    to_freq=True if idx % 2 == 0 else False,
+                    alpha=alpha,
+                    ff_dropout=ff_dropout,
+                    path_dropout=path_dropout,
+                ) if idx < 4 else DenseFourierLayer(
+                    dim=dim,
+                    alpha=alpha,
+                    ff_dropout=ff_dropout,
+                    path_dropout=path_dropout
+                ) for idx in range(6)
+            ]) for _ in range(num_token_layer)
         ])
-
-        self.dense_layers = nn.ModuleList([
-            DenseFourierLayer(
-                dim=dim,
-                alpha=alpha,
-                ff_dropout=ff_dropout,
-                path_dropout=path_dropout
-            ) for _ in range(2)
-        ])
-        # self.token_layers = nn.ModuleList([
-        #     GraphLaplacianLayer(
-        #         dim=dim,
-        #         heads=heads,
-        #         alpha=alpha,
-        #         use_bias=use_bias,
-        #         use_attn_expand_bias=use_attn_expand_bias,
-        #         head_expand_scale=head_expand_scale,
-        #         ff_expand_scale=ff_expand_scale,
-        #         ff_dropout=ff_dropout,
-        #         attention_dropout=attention_dropout,
-        #         path_dropout=path_dropout,
-        #     ) for _ in range(num_token_layer)
-        # ])
 
         self.cls_token = nn.Parameter(torch.randn(1, dim), requires_grad=True)
         nn.init.trunc_normal_(self.cls_token, std=0.02)
@@ -578,13 +563,14 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         attentions.append(attention)
 
         #
-        for idx, layer in enumerate(self.token_layers):
-            x, attention = layer(x, graph_portion, eig_vector_list)
-            attentions.append(attention)
+        for stage in self.stages:
+            for idx, layer in enumerate(stage):
+                if idx < 4:
+                    x, attention = layer(x, graph_portion, eig_vector_list)
+                else:
+                    x, attention = layer(x, graph_portion)
 
-        #
-        for idx, layer in enumerate(self.dense_layers):
-            x, _ = layer(x, graph_portion)
+                attentions.append(attention)
 
         #
         cls_tokens = repeat(self.cls_token, "1 d -> b d", b=b)
