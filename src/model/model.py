@@ -46,7 +46,6 @@ class GraphEdgeFusionAttention(nn.Module):
         self.Q = nn.Linear(dim, dim, bias=use_bias)
         self.K = nn.Linear(dim, dim, bias=use_bias)
         self.V = nn.Linear(dim, dim, bias=use_bias)
-        # self.edge_Q = nn.Linear(edge_dim, dim, bias=use_edge_bias)
         self.edge_K = nn.Linear(edge_dim, dim, bias=use_edge_bias)
         self.edge_V = nn.Linear(dim, dim, bias=use_edge_bias)
         self.attn_expand_proj = nn.Linear(self.heads, self.expanded_heads, bias=use_attn_expand_bias)
@@ -60,7 +59,6 @@ class GraphEdgeFusionAttention(nn.Module):
         
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> Tuple[torch.Tensor]:
         n, _ = x.shape  # no batch size since graphs are coalessed into one
-        # e, _ = edges.shape
 
         #
         q, k, v = self.Q(x), self.K(x), self.V(x)
@@ -72,11 +70,8 @@ class GraphEdgeFusionAttention(nn.Module):
         k = k.index_select(dim=1, index=edge_index[1])  # k[:, edge_index[1], :] (h e d)
         v = v_non_scatter.index_select(dim=1, index=edge_index[1])  # v[:, edge_index[1], :] (h e d)
 
-        # edge_q = self.edge_Q(edges)
         edge_k = self.edge_K(edges)
         edge_v = self.edge_V(edges)
-        # edge_q, edge_k, edge_v = self.edge_Q(edges), self.edge_K(edges), self.edge_V(edges)
-        # edge_q = rearrange(edge_q, "e (h d) -> h e d", h=self.heads)
         edge_k = rearrange(edge_k, "e (h d) -> h e d", h=self.heads)
         edge_v = rearrange(edge_v, "e (h d) -> h e d", h=self.heads)
 
@@ -85,8 +80,6 @@ class GraphEdgeFusionAttention(nn.Module):
         attention = einsum("h e d, h e d -> h e", q, k)  # element-wsie attention
         attention = rearrange(attention, "h e -> e h")
         attention = self.attn_expand_proj(attention)
-        attention = nn.functional.gelu(attention)
-        attention = self.attn_squeeze_proj(attention)
         # softmax
         attention_list = attention.split(1, dim=1)
         attention = torch.cat([
@@ -95,8 +88,9 @@ class GraphEdgeFusionAttention(nn.Module):
                 index=edge_index[0],
                 dim=0,
                 num_nodes=n
-            ) for head_idx in range(self.heads)
+            ) for head_idx in range(self.expanded_heads)
         ], dim=1)
+        attention = self.attn_squeeze_proj(attention)
         attention = self.attention_dropout(attention)  
         attention = rearrange(attention, "e h -> h e")
 
@@ -200,6 +194,80 @@ class GraphLaplacianAttention(nn.Module):
         outs = self.out_dropout(outs)
 
         return outs, attentions
+
+    @torch.jit.ignore
+    def no_weight_decay(self) -> Set[str]:
+        return set()
+
+
+class GraphCrossCovarianceAttention(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        heads: int,
+        head_expand_scale: float = 1.,
+        attention_dropout: float = 0.,
+        ff_dropout: float = 0.,
+        use_bias: bool = False,
+        use_attn_expand_bias: bool = False,
+        dtype = torch.float32,
+        **rest
+    ) -> None:
+        super().__init__()
+
+        head_dim = dim // heads
+
+        assert (
+            head_dim * heads == dim
+        ), name_with_msg(self, f"`head_dim` ({head_dim}) * `heads` ({heads}) != `dim` ({dim})")
+
+        self.heads = heads
+        self.expanded_heads = int(head_expand_scale*self.heads)  # ceiling
+
+        self.Q = nn.Linear(dim, dim, bias=use_bias)
+        self.K = nn.Linear(dim, dim, bias=use_bias)
+        self.V = nn.Linear(dim, dim, bias=use_bias)
+        self.temperature = nn.Parameter(torch.ones(self.heads, 1, 1))
+        self.out_linear = nn.Linear(dim, dim)
+
+        self.attention_dropout = nn.Dropout(attention_dropout)
+        self.out_dropout = nn.Dropout(ff_dropout)
+
+        self.scale = head_dim ** (-0.5)
+        
+    def forward(self, x: torch.Tensor, graph_portion: List[int]) -> torch.Tensor:
+        b = len(graph_portion)
+
+        q, k, v = self.Q(x), self.K(x), self.V(x)
+        q = rearrange(q, "p (h d) -> h p d", h=self.heads)
+        k = rearrange(k, "p (h d) -> h d p", h=self.heads)*self.scale
+        v = rearrange(v, "p (h d) -> h p d", h=self.heads)
+        
+        q_list = q.split(graph_portion, dim=1)
+        k_list = k.split(graph_portion, dim=-1)
+        v_list = v.split(graph_portion, dim=1)
+        
+        outs: List[torch.Tensor] = []
+        for idx in range(b):
+            q_graph = q_list[idx]
+            k_graph = k_list[idx]
+            v_graph = v_list[idx]
+
+            q_graph = torch.nn.functional.normalize(q_graph, dim=-2)
+            k_graph = torch.nn.functional.normalize(k_graph, dim=-1)*self.temperature
+            attention = einsum("h u n, h n v -> h u v", k_graph, q_graph)  # u == v == d
+            attention = attention.softmax(dim=-1)
+            attention = self.attention_dropout(attention)
+
+            out = einsum("h n u, h u v -> h n v", v_graph, attention)
+            out = rearrange(out, "h n d -> n (h d)")
+            outs.append(out)
+
+        outs = torch.cat(outs, dim=0)
+        outs = self.out_linear(outs)
+        outs = self.out_dropout(outs)
+
+        return outs
 
     @torch.jit.ignore
     def no_weight_decay(self) -> Set[str]:
@@ -322,21 +390,51 @@ class GraphEdgeFusionLayer(nn.Module):
     def __init__(
         self,
         dim: int,
+        edge_dim: int,
+        alpha: float,
+        ff_expand_scale: int = 4,
+        ff_dropout: float = 0.,
+        path_dropout: float = 0.,
         **kwargs
     ) -> None:
         super().__init__()
 
-        self.node_norm = nn.LayerNorm(dim)
-        self.edge_norm = nn.LayerNorm(dim)
-        self.attn_block = GraphEdgeFusionAttention(
+        self.edge_norm = nn.LayerNorm(edge_dim)
+
+        self.xca_block = LayerScale(
+            core_block=GraphCrossCovarianceAttention,
             dim=dim,
+            alpha=alpha,
+            ff_dropout=ff_dropout,
+            path_dropout=path_dropout,
             **kwargs
         )
 
-    def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> Tuple[torch.Tensor]:
-        x = self.node_norm(x)
-        edges = self.node_norm(edges)
-        x, attention = self.attn_block(x, edges, edge_index)
+        self.edge_block = LayerScale(
+            core_block=GraphEdgeFusionAttention,
+            dim=dim,
+            edge_dim=edge_dim,
+            alpha=alpha,
+            ff_dropout=ff_dropout,
+            path_dropout=path_dropout,
+            **kwargs
+        )
+
+        self.ff_block = LayerScale(
+            core_block=MLP,
+            dim=dim,
+            alpha=alpha,
+            expand_dim=dim*ff_expand_scale,
+            ff_dropout=ff_dropout,
+            path_dropout=path_dropout,
+        )
+
+    def forward(self, x: torch.Tensor, graph_portion: List[int], edges: torch.Tensor, edge_index: torch.Tensor) -> Tuple[torch.Tensor]:
+        edges = self.edge_norm(edges)
+        
+        x, attention = self.xca_block(x, graph_portion)
+        x, attention = self.edge_block(x, edges, edge_index)
+        x, attention = self.ff_block(x)
 
         return x, attention
 
@@ -504,40 +602,25 @@ class GraphLaplacianTransformerBackbone(nn.Module):
     ) -> None:
         super().__init__()
         
-        self.edge_fusion = GraphEdgeFusionLayer(
-            dim=dim,
-            edge_dim=edge_dim,
-            heads=heads,
-            # alpha=alpha,
-            use_bias=use_bias,
-            use_edge_bias=use_edge_bias,
-            use_attn_expand_bias=use_attn_expand_bias,
-            head_expand_scale=head_expand_scale,
-            # ff_expand_scale=ff_expand_scale,
-            ff_dropout=ff_dropout,
-            attention_dropout=attention_dropout,
-            # path_dropout=path_dropout,
-        )
-
-        self.stages = nn.ModuleList([
-            nn.ModuleList([
-                GraphFourierLayer(
-                    dim=dim,
-                    to_freq=True if idx % 2 == 0 else False,
-                    alpha=alpha,
-                    ff_dropout=ff_dropout,
-                    path_dropout=path_dropout,
-                ) if idx < 4 else DenseFourierLayer(
-                    dim=dim,
-                    alpha=alpha,
-                    ff_dropout=ff_dropout,
-                    path_dropout=path_dropout
-                ) for idx in range(6)
-            ]) for _ in range(num_token_layer)
+        self.token_layers = nn.ModuleList([
+            GraphEdgeFusionLayer(
+                dim=dim,
+                edge_dim=edge_dim,
+                heads=heads,
+                alpha=alpha,
+                use_bias=use_bias,
+                use_edge_bias=use_edge_bias,
+                use_attn_expand_bias=use_attn_expand_bias,
+                head_expand_scale=head_expand_scale,
+                ff_expand_scale=ff_expand_scale,
+                ff_dropout=ff_dropout,
+                attention_dropout=attention_dropout,
+                path_dropout=path_dropout,
+            ) for _ in range(num_token_layer)
         ])
 
         self.cls_token = nn.Parameter(torch.randn(1, dim), requires_grad=True)
-        nn.init.trunc_normal_(self.cls_token, std=0.02)
+        nn.init.trunc_normal_(self.cls_token, std=0.01)
         self.cls_layers = nn.ModuleList([
             GraphClassPoolLayer(
                 dim=dim,
@@ -556,21 +639,12 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         graph_portion = graph_portion.tolist()
         attentions = []
         
-        adj_list = [to_dense_adj(edge_index) for edge_index in graph_edge_index]
-        eig_vector_list = [torch.linalg.eigh(torch.diag_embed(adj.sum(dim=-1)) - adj)[1].squeeze() for adj in adj_list]
-        #
-        x, attention = self.edge_fusion(x, edges, edge_index)
-        attentions.append(attention)
+        # adj_list = [to_dense_adj(edge_index) for edge_index in graph_edge_index]
+        # eig_vector_list = [torch.linalg.eigh(torch.diag_embed(adj.sum(dim=-1)) - adj)[1].squeeze() for adj in adj_list]
 
         #
-        for stage in self.stages:
-            for idx, layer in enumerate(stage):
-                if idx < 4:
-                    x, attention = layer(x, graph_portion, eig_vector_list)
-                else:
-                    x, attention = layer(x, graph_portion)
-
-                attentions.append(attention)
+        for layer in self.token_layers:
+            x, _ = layer(x, graph_portion, edges, edge_index)
 
         #
         cls_tokens = repeat(self.cls_token, "1 d -> b d", b=b)
