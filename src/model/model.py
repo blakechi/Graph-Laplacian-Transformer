@@ -31,6 +31,7 @@ class GraphEdgeFusionAttention(nn.Module):
         use_bias: bool = False,
         use_edge_bias: bool = False,
         use_attn_expand_bias: bool = False,
+        use_self_loop: bool = True
     ) -> None:
         super().__init__()
 
@@ -47,7 +48,7 @@ class GraphEdgeFusionAttention(nn.Module):
         self.K = nn.Linear(dim, dim, bias=use_bias)
         self.V = nn.Linear(dim, dim, bias=use_bias)
         self.edge_K = nn.Linear(edge_dim, dim, bias=use_edge_bias)
-        self.edge_V = nn.Linear(dim, dim, bias=use_edge_bias)
+        self.edge_V = nn.Linear(edge_dim, dim, bias=use_edge_bias)
         self.attn_expand_proj = nn.Linear(self.heads, self.expanded_heads, bias=use_attn_expand_bias)
         self.attn_squeeze_proj = nn.Linear(self.expanded_heads, self.heads, bias=False)
         self.out_linear = nn.Linear(dim, dim)
@@ -56,7 +57,8 @@ class GraphEdgeFusionAttention(nn.Module):
         self.out_dropout = nn.Dropout(ff_dropout)
 
         self.scale = head_dim ** (-0.5)
-        
+        self.use_self_loop = use_self_loop
+
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> Tuple[torch.Tensor]:
         n, _ = x.shape  # no batch size since graphs are coalessed into one
         # e, _ = edges.shape
@@ -89,7 +91,7 @@ class GraphEdgeFusionAttention(nn.Module):
                 index=edge_index[0],
                 dim=0,
                 num_nodes=n
-            ) for head_idx in range(self.heads)
+            ) for head_idx in range(self.expanded_heads)
         ], dim=1)
         attention = self.attn_squeeze_proj(attention)
         attention = self.attention_dropout(attention)  
@@ -107,6 +109,10 @@ class GraphEdgeFusionAttention(nn.Module):
                 reduce="sum"
             ) for head_idx in range(self.heads)
         ], dim=0)
+        
+        if self.use_self_loop:
+            out = v_non_scatter + out
+
         out = rearrange(out, "h n d -> n (h d)")
         out = self.out_linear(out)
         out = self.out_dropout(out)
@@ -521,14 +527,14 @@ class GraphLaplacianTransformerBackbone(nn.Module):
             ) for idx in range(num_token_layer)
         ])
 
-        self.dense_layers = nn.ModuleList([
-            DenseFourierLayer(
-                dim=dim,
-                alpha=alpha,
-                ff_dropout=ff_dropout,
-                path_dropout=path_dropout
-            ) for _ in range(2)
-        ])
+        # self.dense_layers = nn.ModuleList([
+        #     DenseFourierLayer(
+        #         dim=dim,
+        #         alpha=alpha,
+        #         ff_dropout=ff_dropout,
+        #         path_dropout=path_dropout
+        #     ) for _ in range(2)
+        # ])
         # self.token_layers = nn.ModuleList([
         #     GraphLaplacianLayer(
         #         dim=dim,
@@ -576,8 +582,8 @@ class GraphLaplacianTransformerBackbone(nn.Module):
             attentions.append(attention)
 
         #
-        for idx, layer in enumerate(self.dense_layers):
-            x, _ = layer(x, graph_portion)
+        # for idx, layer in enumerate(self.dense_layers):
+        #     x, _ = layer(x, graph_portion)
 
         #
         cls_tokens = repeat(self.cls_token, "1 d -> b d", b=b)
