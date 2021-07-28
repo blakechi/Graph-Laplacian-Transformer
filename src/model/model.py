@@ -2,12 +2,13 @@ from typing import List, OrderedDict, Set, Tuple, Dict
 
 import torch
 from torch import nn, einsum
+from torch.nn.modules import normalization
 try:
     from typing_extensions import Final
 except:
     from torch.jit import Final
 from torch_geometric.utils import softmax as sparse_softmax
-from torch_geometric.utils import to_dense_adj
+from torch_geometric.utils import to_dense_adj, get_laplacian
 from torch_scatter import scatter
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
@@ -45,7 +46,6 @@ class GraphEdgeFusionAttention(nn.Module):
         self.Q = nn.Linear(dim, dim, bias=use_bias)
         self.K = nn.Linear(dim, dim, bias=use_bias)
         self.V = nn.Linear(dim, dim, bias=use_bias)
-        # self.edge_Q = nn.Linear(edge_dim, dim, bias=use_edge_bias)
         self.edge_K = nn.Linear(edge_dim, dim, bias=use_edge_bias)
         self.edge_V = nn.Linear(dim, dim, bias=use_edge_bias)
         self.attn_expand_proj = nn.Linear(self.heads, self.expanded_heads, bias=use_attn_expand_bias)
@@ -71,11 +71,8 @@ class GraphEdgeFusionAttention(nn.Module):
         k = k.index_select(dim=1, index=edge_index[1])  # k[:, edge_index[1], :] (h e d)
         v = v_non_scatter.index_select(dim=1, index=edge_index[1])  # v[:, edge_index[1], :] (h e d)
 
-        # edge_q = self.edge_Q(edges)
         edge_k = self.edge_K(edges)
         edge_v = self.edge_V(edges)
-        # edge_q, edge_k, edge_v = self.edge_Q(edges), self.edge_K(edges), self.edge_V(edges)
-        # edge_q = rearrange(edge_q, "e (h d) -> h e d", h=self.heads)
         edge_k = rearrange(edge_k, "e (h d) -> h e d", h=self.heads)
         edge_v = rearrange(edge_v, "e (h d) -> h e d", h=self.heads)
 
@@ -84,8 +81,6 @@ class GraphEdgeFusionAttention(nn.Module):
         attention = einsum("h e d, h e d -> h e", q, k)  # element-wsie attention
         attention = rearrange(attention, "h e -> e h")
         attention = self.attn_expand_proj(attention)
-        attention = nn.functional.gelu(attention)
-        attention = self.attn_squeeze_proj(attention)
         # softmax
         attention_list = attention.split(1, dim=1)
         attention = torch.cat([
@@ -96,6 +91,7 @@ class GraphEdgeFusionAttention(nn.Module):
                 num_nodes=n
             ) for head_idx in range(self.heads)
         ], dim=1)
+        attention = self.attn_squeeze_proj(attention)
         attention = self.attention_dropout(attention)  
         attention = rearrange(attention, "e h -> h e")
 
@@ -185,7 +181,7 @@ class GraphLaplacianAttention(nn.Module):
             attention = self.attention_dropout(attention)
 
             out = einsum("h n m, h m d -> h n d", attention, v_graph)
-            out = v_graph - out  # D - A
+            out = v_graph*attention.sum(dim=-1, keepdims=True) - out  # D - A
             out = rearrange(out, "h n d -> n (h d)")
             outs.append(out)
 
@@ -324,7 +320,6 @@ class GraphEdgeFusionLayer(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.node_norm = nn.LayerNorm(dim)
         self.edge_norm = nn.LayerNorm(dim)
         self.attn_block = GraphEdgeFusionAttention(
             dim=dim,
@@ -332,8 +327,7 @@ class GraphEdgeFusionLayer(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> Tuple[torch.Tensor]:
-        x = self.node_norm(x)
-        edges = self.node_norm(edges)
+        edges = self.edge_norm(edges)
         x, attention = self.attn_block(x, edges, edge_index)
 
         return x, attention
@@ -570,8 +564,8 @@ class GraphLaplacianTransformerBackbone(nn.Module):
         graph_portion = graph_portion.tolist()
         attentions = []
         
-        adj_list = [to_dense_adj(edge_index) for edge_index in graph_edge_index]
-        eig_vector_list = [torch.linalg.eigh(torch.diag_embed(adj.sum(dim=-1)) - adj)[1].squeeze() for adj in adj_list]
+        lap_list = [get_laplacian(edge_index, normalization="sym") for edge_index in graph_edge_index]
+        eig_vector_list = [torch.linalg.eigh(to_dense_adj(lap_index, edge_attr=lap_weight))[1].squeeze() for lap_index, lap_weight in lap_list]
         #
         x, attention = self.edge_fusion(x, edges, edge_index)
         attentions.append(attention)
