@@ -31,6 +31,7 @@ class GraphEdgeFusionAttention(nn.Module):
         use_bias: bool = False,
         use_edge_bias: bool = False,
         use_attn_expand_bias: bool = False,
+        use_self_loop: bool = True
     ) -> None:
         super().__init__()
 
@@ -47,7 +48,7 @@ class GraphEdgeFusionAttention(nn.Module):
         self.K = nn.Linear(dim, dim, bias=use_bias)
         self.V = nn.Linear(dim, dim, bias=use_bias)
         self.edge_K = nn.Linear(edge_dim, dim, bias=use_edge_bias)
-        self.edge_V = nn.Linear(dim, dim, bias=use_edge_bias)
+        self.edge_V = nn.Linear(edge_dim, dim, bias=use_edge_bias)
         self.attn_expand_proj = nn.Linear(self.heads, self.expanded_heads, bias=use_attn_expand_bias)
         self.attn_squeeze_proj = nn.Linear(self.expanded_heads, self.heads, bias=False)
         self.out_linear = nn.Linear(dim, dim)
@@ -56,6 +57,7 @@ class GraphEdgeFusionAttention(nn.Module):
         self.out_dropout = nn.Dropout(ff_dropout)
 
         self.scale = head_dim ** (-0.5)
+        self.use_self_loop = use_self_loop
         
     def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> Tuple[torch.Tensor]:
         n, _ = x.shape  # no batch size since graphs are coalessed into one
@@ -106,6 +108,10 @@ class GraphEdgeFusionAttention(nn.Module):
                 reduce="sum"
             ) for head_idx in range(self.heads)
         ], dim=0)
+
+        if self.use_self_loop:
+            out = v_non_scatter + out
+
         out = rearrange(out, "h n d -> n (h d)")
         out = self.out_linear(out)
         out = self.out_dropout(out)
@@ -121,11 +127,13 @@ class GraphLaplacianAttention(nn.Module):
     def __init__(
         self,
         dim: int,
+        edge_dim: int,
         heads: int,
         head_expand_scale: float = 1.,
         attention_dropout: float = 0.,
         ff_dropout: float = 0.,
         use_bias: bool = False,
+        use_edge_bias: bool = False,
         use_attn_expand_bias: bool = False,
         dtype = torch.float32,
     ) -> None:
@@ -143,6 +151,8 @@ class GraphLaplacianAttention(nn.Module):
         self.Q = nn.Linear(dim, dim, bias=use_bias)
         self.K = nn.Linear(dim, dim, bias=use_bias)
         self.V = nn.Linear(dim, dim, bias=use_bias)
+        self.edge_K = nn.Linear(edge_dim, dim, bias=use_edge_bias)
+        self.edge_V = nn.Linear(edge_dim, dim, bias=use_edge_bias)
         self.attn_expand_proj = nn.Conv2d(self.heads, self.expanded_heads, kernel_size=1, bias=use_attn_expand_bias)
         self.attn_squeeze_proj = nn.Conv2d(self.expanded_heads, self.heads, kernel_size=1, bias=False)
         self.out_linear = nn.Linear(dim, dim)
@@ -152,8 +162,75 @@ class GraphLaplacianAttention(nn.Module):
 
         self.scale = head_dim ** (-0.5)
         self.mask_value = -torch.finfo(dtype).max
-        
-    def forward(self, x: torch.Tensor, graph_portion: List[int], graph_edge_index: List[torch.Tensor]) -> Tuple[torch.Tensor]:
+
+    def forward(self, x: torch.Tensor, edges: torch.Tensor, edge_index: torch.Tensor) -> Tuple[torch.Tensor]:
+        n, _ = x.shape  # no batch size since graphs are coalessed into one
+
+        #
+        q, k, v = self.Q(x), self.K(x), self.V(x)
+        q = rearrange(q, "n (h d) -> h n d", h=self.heads)
+        k = rearrange(k, "n (h d) -> h n d", h=self.heads)
+        v_non_scatter = rearrange(v, "n (h d) -> h n d", h=self.heads)
+        # all edge pairs
+        q = q.index_select(dim=1, index=edge_index[0])  # q[:, edge_index[0], :] (h e d)
+        k = k.index_select(dim=1, index=edge_index[1])  # k[:, edge_index[1], :] (h e d)
+        v = v_non_scatter.index_select(dim=1, index=edge_index[1])  # v[:, edge_index[1], :] (h e d)
+
+        edge_k = self.edge_K(edges)
+        edge_v = self.edge_V(edges)
+        edge_k = rearrange(edge_k, "e (h d) -> h e d", h=self.heads)
+        edge_v = rearrange(edge_v, "e (h d) -> h e d", h=self.heads)
+
+        #
+        k = (k + edge_k)*self.scale
+        attention = einsum("h e d, h e d -> h e", q, k)  # element-wsie attention
+        attention = rearrange(attention, "h e -> e h")
+        attention = self.attn_expand_proj(attention)
+        # softmax
+        attention_list = attention.split(1, dim=1)
+        attention = torch.cat([
+            sparse_softmax(
+                attention_list[head_idx],
+                index=edge_index[0],
+                dim=0,
+                num_nodes=n
+            ) for head_idx in range(self.expanded_heads)
+        ], dim=1)
+        attention = self.attn_squeeze_proj(attention)
+        attention = self.attention_dropout(attention)  
+        attention = rearrange(attention, "e h -> h e")
+
+        #
+        v = v + edge_v
+        out = einsum("h e, h e d -> h e d", attention, v)
+        out_list = out.split(1, dim=0)
+        out = torch.cat([
+            scatter(
+                out_list[head_idx],
+                index=edge_index[0],
+                dim=1,
+                reduce="sum"
+            ) for head_idx in range(self.heads)
+        ], dim=0)
+        # Sum attention values node-wisely for D
+        attention_list = attention.split(1, dim=0)
+        node_attention = torch.cat([
+            scatter(
+                attention_list[head_idx],
+                index=edge_index[0],
+                dim=1,
+                reduce="sum"
+            ) for head_idx in range(self.heads)
+        ], dim=0)
+        node_attention = rearrange(node_attention, "h n -> h n 1")
+        out = v_non_scatter*node_attention - out  # D - A
+        out = rearrange(out, "h n d -> n (h d)")
+        out = self.out_linear(out)
+        out = self.out_dropout(out)
+
+        return out, attention
+    
+    def global_forward(self, x: torch.Tensor, graph_portion: List[int], graph_edge_index: List[torch.Tensor]) -> Tuple[torch.Tensor]:
         b = len(graph_portion)
         n, _ = x.shape  # no batch size since graphs are coalessed into one
 
@@ -175,13 +252,12 @@ class GraphLaplacianAttention(nn.Module):
 
             attention = einsum("h n d, h m d -> h n m", q_graph, k_graph)
             attention = self.attn_expand_proj(attention.unsqueeze(dim=0))  # (h, n, m) -> (1, h, n, m)
-            attention = nn.functional.gelu(attention)
-            attention = self.attn_squeeze_proj(attention).squeeze(dim=0)  # (1, h, n, m) -> (h, n, m)
             attention = attention.softmax(dim=-1)
+            attention = self.attn_squeeze_proj(attention).squeeze(dim=0)  # (1, h, n, m) -> (h, n, m)
             attention = self.attention_dropout(attention)
 
             out = einsum("h n m, h m d -> h n d", attention, v_graph)
-            out = v_graph - out  # D - A
+            out = v_graph*attention.sum(dim=-1, keepdims=True) - out  # D - A
             out = rearrange(out, "h n d -> n (h d)")
             outs.append(out)
 
@@ -205,12 +281,9 @@ class GraphCrossCovarianceAttention(nn.Module):
         self,
         dim: int,
         heads: int,
-        head_expand_scale: float = 1.,
         attention_dropout: float = 0.,
         ff_dropout: float = 0.,
         use_bias: bool = False,
-        use_attn_expand_bias: bool = False,
-        dtype = torch.float32,
         **rest
     ) -> None:
         super().__init__()
@@ -222,7 +295,6 @@ class GraphCrossCovarianceAttention(nn.Module):
         ), name_with_msg(self, f"`head_dim` ({head_dim}) * `heads` ({heads}) != `dim` ({dim})")
 
         self.heads = heads
-        self.expanded_heads = int(head_expand_scale*self.heads)  # ceiling
 
         self.Q = nn.Linear(dim, dim, bias=use_bias)
         self.K = nn.Linear(dim, dim, bias=use_bias)
