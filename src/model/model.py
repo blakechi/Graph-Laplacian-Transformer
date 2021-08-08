@@ -153,8 +153,8 @@ class GraphLaplacianAttention(nn.Module):
         self.V = nn.Linear(dim, dim, bias=use_bias)
         self.edge_K = nn.Linear(edge_dim, dim, bias=use_edge_bias)
         self.edge_V = nn.Linear(edge_dim, dim, bias=use_edge_bias)
-        self.attn_expand_proj = nn.Conv2d(self.heads, self.expanded_heads, kernel_size=1, bias=use_attn_expand_bias)
-        self.attn_squeeze_proj = nn.Conv2d(self.expanded_heads, self.heads, kernel_size=1, bias=False)
+        self.attn_expand_proj = nn.Linear(self.heads, self.expanded_heads, bias=use_attn_expand_bias)
+        self.attn_squeeze_proj = nn.Linear(self.expanded_heads, self.heads, bias=False)
         self.out_linear = nn.Linear(dim, dim)
 
         self.attention_dropout = nn.Dropout(attention_dropout)
@@ -483,7 +483,7 @@ class GraphEdgeFusionLayer(nn.Module):
         )
 
         self.edge_block = LayerScale(
-            core_block=GraphEdgeFusionAttention,
+            core_block=GraphLaplacianAttention,
             dim=dim,
             edge_dim=edge_dim,
             alpha=alpha,
